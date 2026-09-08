@@ -1,0 +1,330 @@
+{
+  "environment": {
+    "vcpus": 16,
+    "memoryGiB": 32,
+    "backendQuotaCpus": 6,
+    "backendMemoryGiB": 8,
+    "postgresMemoryGiB": 4,
+    "storage": "Docker anonymous volumes on Namespace instance disk",
+    "companies": 100,
+    "seedDocuments": 330000,
+    "rowsPerMessage": 488
+  },
+  "cases": [
+    {
+      "case": "postgres-5000-five-minutes",
+      "requests": 50000,
+      "seconds": 300,
+      "delayMs": 200,
+      "siteSlots": 64,
+      "statsMs": {
+        "totalMs": {
+          "p50": 244.5403970000043,
+          "p95": 2214.1356340000057,
+          "p99": 3079.421146000037,
+          "max": 3457.029263000004
+        },
+        "headMs": {
+          "p50": 244.49586900003487,
+          "p95": 2213.8655700000236,
+          "p99": 3077.8549289999646,
+          "max": 3457.010227999999
+        },
+        "handlerLogMs": {
+          "p50": 241.927,
+          "p95": 398.53,
+          "p99": 591.524,
+          "max": 989.378
+        },
+        "gapMs": {
+          "p50": 0.3735150000079557,
+          "p95": 1828.1986700000357,
+          "p99": 2700.2635069999574,
+          "max": 2980.918420000012
+        },
+        "headerGapMs": {
+          "p50": 0.30302300000238347,
+          "p95": 1828.168895000033,
+          "p99": 2700.197737999993,
+          "max": 2980.886881000023
+        },
+        "siteGapMs": {
+          "p50": 0.3735150000079557,
+          "p95": 1828.1986700000357,
+          "p99": 2700.2635069999574,
+          "max": 2980.918420000012
+        },
+        "dispatchLagMs": {
+          "p50": -0.3477040000143461,
+          "p95": 0.6280200000037439,
+          "p99": 0.7579139999870677,
+          "max": 19.77395599999727
+        },
+        "socketWaitMs": {
+          "p50": 0.07983000000240281,
+          "p95": 0.17332400000304915,
+          "p99": 12.36548199999379,
+          "max": 292.4928560000262
+        },
+        "gapAfterSocketMs": {
+          "p50": 0.2837169999876039,
+          "p95": 1828.109132999985,
+          "p99": 2689.785081000001,
+          "max": 2980.832099000002
+        }
+      },
+      "drainSeconds": 0.9239843659999897,
+      "metricDeltas": {
+        "database_commit_rows": 3050000.0,
+        "database_commit_index_rows": 9150000.0,
+        "commit_race_total": 24977.0,
+        "occ_retries_total_sum": 24977.0,
+        "occ_retries_total_count": 50000.0,
+        "write_throughput_limit_exceeded_total": 0
+      },
+      "resources": {
+        "backend": {
+          "cpuP95Percent": 396.21,
+          "memoryPeakMiB": 2367.488,
+          "samples": 60
+        },
+        "postgres": {
+          "cpuP95Percent": 202.04,
+          "memoryPeakMiB": 3585.024,
+          "samples": 60
+        }
+      },
+      "crashRecoverySeconds": 49.29,
+      "walDelta": {
+        "wal_records": 40577539,
+        "wal_fpi": 316481,
+        "wal_bytes": 10541886789,
+        "wal_buffers_full": 0
+      },
+      "checkpointerDelta": {
+        "num_timed": 0,
+        "num_requested": 2,
+        "num_done": 1,
+        "restartpoints_timed": 0,
+        "restartpoints_req": 0,
+        "restartpoints_done": 0,
+        "write_time": 114704,
+        "sync_time": 282,
+        "buffers_written": 89308,
+        "slru_written": 22
+      }
+    },
+    {
+      "case": "postgres-4cpu-five-minutes",
+      "requests": 50000,
+      "seconds": 300,
+      "delayMs": 200,
+      "siteSlots": 64,
+      "statsMs": {
+        "totalMs": {
+          "p50": 231.05523099999118,
+          "p95": 322.84346500001266,
+          "p99": 358.7354050000431,
+          "max": 976.9991930000251
+        },
+        "headMs": {
+          "p50": 230.98869399999967,
+          "p95": 322.75143299999763,
+          "p99": 358.66350100003183,
+          "max": 976.9444300000323
+        },
+        "handlerLogMs": {
+          "p50": 230.591,
+          "p95": 321.488,
+          "p99": 332.403,
+          "max": 976.006
+        },
+        "gapMs": {
+          "p50": 0.3686639999959027,
+          "p95": 0.6594939999990856,
+          "p99": 3.3316140000168275,
+          "max": 501.85542799994766
+        },
+        "headerGapMs": {
+          "p50": 0.29594800001893873,
+          "p95": 0.5391760000090642,
+          "p99": 2.683185999968998,
+          "max": 501.5094209999912
+        },
+        "siteGapMs": {
+          "p50": 0.3686639999959027,
+          "p95": 0.6594939999990856,
+          "p99": 3.3316140000168275,
+          "max": 501.85542799994766
+        },
+        "dispatchLagMs": {
+          "p50": -0.2629799999995157,
+          "p95": 0.1835960000171326,
+          "p99": 0.33869800000684336,
+          "max": 15.126267999992706
+        },
+        "socketWaitMs": {
+          "p50": 0.07971900003030896,
+          "p95": 0.169848000005004,
+          "p99": 0.22718499999609776,
+          "max": 9.00520700000925
+        },
+        "gapAfterSocketMs": {
+          "p50": 0.2820090000154494,
+          "p95": 0.5455609999957858,
+          "p99": 3.1204840000099523,
+          "max": 501.51487099998815
+        }
+      },
+      "drainSeconds": 0.31157186600001296,
+      "metricDeltas": {
+        "database_commit_rows": 3050004.0,
+        "database_commit_index_rows": 9150012.0,
+        "commit_race_total": 24987.0,
+        "occ_retries_total_sum": 24987.0,
+        "occ_retries_total_count": 50000.0,
+        "write_throughput_limit_exceeded_total": 0
+      },
+      "resources": {
+        "backend": {
+          "cpuP95Percent": 409.71,
+          "memoryPeakMiB": 2260.992,
+          "samples": 60
+        },
+        "postgres": {
+          "cpuP95Percent": 205.98,
+          "memoryPeakMiB": 3588.096,
+          "samples": 60
+        }
+      },
+      "crashRecoverySeconds": 47.531,
+      "walDelta": {
+        "wal_records": 40475003,
+        "wal_fpi": 317050,
+        "wal_bytes": 10535022682,
+        "wal_buffers_full": 0
+      },
+      "checkpointerDelta": {
+        "num_timed": 0,
+        "num_requested": 2,
+        "num_done": 1,
+        "restartpoints_timed": 0,
+        "restartpoints_req": 0,
+        "restartpoints_done": 0,
+        "write_time": 114166,
+        "sync_time": 6,
+        "buffers_written": 90854,
+        "slru_written": 23
+      }
+    },
+    {
+      "case": "postgres-4cpu-lz4-five-minutes",
+      "requests": 50000,
+      "seconds": 300,
+      "delayMs": 200,
+      "siteSlots": 64,
+      "statsMs": {
+        "totalMs": {
+          "p50": 232.25313100000494,
+          "p95": 323.94813400000567,
+          "p99": 423.01274599996395,
+          "max": 1103.3656689999625
+        },
+        "headMs": {
+          "p50": 232.19592399999965,
+          "p95": 323.8525900000095,
+          "p99": 422.89858300000196,
+          "max": 1102.9803879999672
+        },
+        "handlerLogMs": {
+          "p50": 231.352,
+          "p95": 322.041,
+          "p99": 336.392,
+          "max": 1102.623
+        },
+        "gapMs": {
+          "p50": 0.3949780000245653,
+          "p95": 0.7109299999794416,
+          "p99": 29.51948400002533,
+          "max": 602.1436720000431
+        },
+        "headerGapMs": {
+          "p50": 0.32159499998599017,
+          "p95": 0.5844410000121911,
+          "p99": 27.94862500002654,
+          "max": 602.0748240000187
+        },
+        "siteGapMs": {
+          "p50": 0.3949780000245653,
+          "p95": 0.7109299999794416,
+          "p99": 29.51948400002533,
+          "max": 602.1436720000431
+        },
+        "dispatchLagMs": {
+          "p50": -0.29383800001232885,
+          "p95": 0.7403090000152588,
+          "p99": 0.8839629999711178,
+          "max": 15.690771999987192
+        },
+        "socketWaitMs": {
+          "p50": 0.09453699999721721,
+          "p95": 0.17638000001898035,
+          "p99": 0.2362919999868609,
+          "max": 6.806106999982148
+        },
+        "gapAfterSocketMs": {
+          "p50": 0.2967549999920607,
+          "p95": 0.5888700000031406,
+          "p99": 29.264347000025225,
+          "max": 602.0851230000346
+        }
+      },
+      "drainSeconds": 0.4432606379999779,
+      "metricDeltas": {
+        "database_commit_rows": 3050000.0,
+        "database_commit_index_rows": 9150000.0,
+        "commit_race_total": 24995.0,
+        "occ_retries_total_sum": 24995.0,
+        "occ_retries_total_count": 50000.0,
+        "write_throughput_limit_exceeded_total": 0
+      },
+      "resources": {
+        "backend": {
+          "cpuP95Percent": 418.47,
+          "memoryPeakMiB": 2287.616,
+          "samples": 60
+        },
+        "postgres": {
+          "cpuP95Percent": 217.01,
+          "memoryPeakMiB": 3558.4,
+          "samples": 60
+        }
+      },
+      "crashRecoverySeconds": 54.194,
+      "walDelta": {
+        "wal_records": 40509038,
+        "wal_fpi": 317567,
+        "wal_bytes": 9823619531,
+        "wal_buffers_full": 0
+      },
+      "checkpointerDelta": {
+        "num_timed": 0,
+        "num_requested": 2,
+        "num_done": 1,
+        "restartpoints_timed": 0,
+        "restartpoints_req": 0,
+        "restartpoints_done": 0,
+        "write_time": 125693,
+        "sync_time": 460,
+        "buffers_written": 78407,
+        "slru_written": 22
+      }
+    }
+  ],
+  "limitations": [
+    "Synthetic workload, not the complete customer application.",
+    "One sample per long profile; no confidence interval.",
+    "SIGKILL after acknowledgements; not host or disk loss."
+  ],
+  "rawEvidenceArchiveSha256": "3df131cb0540445e01e393f94bea666a576f92b4b16933ee103220dc9618312e"
+}
