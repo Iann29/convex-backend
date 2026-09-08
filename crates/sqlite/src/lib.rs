@@ -48,7 +48,10 @@ use common::{
         TimestampRange,
     },
     query::Order,
-    runtime::CoopStreamExt as _,
+    runtime::{
+        block_in_place,
+        CoopStreamExt as _,
+    },
     types::{
         IndexId,
         PersistenceVersion,
@@ -77,12 +80,20 @@ use rusqlite::{
 };
 use serde::Deserialize as _;
 use serde_json::Value as JsonValue;
+use tokio::{
+    runtime::{
+        Handle,
+        RuntimeFlavor,
+    },
+    sync::Semaphore,
+};
 
-// We only have a single Sqlite connection which does not allow async calls, so
-// we can't really make queries concurrent.
+// ponytail: one connection serializes persistence; evaluate WAL readers when
+// measured connection waits justify parallel reads.
 #[derive(Clone)]
 pub struct SqlitePersistence {
     inner: Arc<Mutex<Inner>>,
+    access: Arc<Semaphore>,
     newly_created: bool,
 }
 
@@ -100,14 +111,45 @@ register_convex_histogram!(
     "Time holding the SQLite connection lock",
     &["op"]
 );
+register_convex_histogram!(
+    SQLITE_PERMIT_WAIT_SECONDS,
+    "Time waiting for admission to the SQLite connection",
+    &["op", "flavor"]
+);
 
 impl SqlitePersistence {
     async fn run<R: Send>(
         &self,
-        _operation: &'static str,
+        operation: &'static str,
         f: impl FnOnce() -> anyhow::Result<R> + Send,
     ) -> anyhow::Result<R> {
-        f()
+        let runtime = Handle::try_current();
+        let flavor = match runtime.as_ref().map(Handle::runtime_flavor) {
+            Ok(RuntimeFlavor::MultiThread) => "multi",
+            Ok(RuntimeFlavor::CurrentThread) => "current",
+            _ => "other",
+        };
+        let mut wait_timer = Timer::new_with_labels(&SQLITE_PERMIT_WAIT_SECONDS);
+        wait_timer.add_label(StaticMetricLabel::new("op", operation));
+        wait_timer.add_label(StaticMetricLabel::new("flavor", flavor));
+        let _permit = self
+            .access
+            .acquire()
+            .await
+            .context("SQLite admission closed")?;
+        drop(wait_timer);
+
+        // One page or a whole write/revision batch is synchronous. Waiting for
+        // its turn is async; only the admitted operation hands off a Tokio
+        // worker. Any transaction opened inside f is committed or dropped
+        // before this poll returns, preserving the synchronous operation's
+        // cancellation boundary and borrowed data.
+        if runtime.is_ok() {
+            block_in_place(f)
+        } else {
+            // Preserve callers that drive persistence without a Tokio runtime.
+            f()
+        }
     }
 
     fn with_connection<R>(
@@ -135,6 +177,7 @@ impl SqlitePersistence {
         connection.execute_batch(PERSISTENCE_GLOBALS_INIT)?;
         Ok(Self {
             inner: Arc::new(Mutex::new(Inner { connection })),
+            access: Arc::new(Semaphore::new(1)),
             newly_created,
         })
     }
@@ -924,7 +967,17 @@ ORDER BY ts ASC, table_id ASC, id ASC
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{
+        sync::{
+            atomic::{
+                AtomicUsize,
+                Ordering,
+            },
+            mpsc,
+            Arc,
+        },
+        time::Duration,
+    };
 
     use common::{
         document::{
@@ -966,6 +1019,132 @@ mod tests {
     use futures::TryStreamExt;
 
     use super::SqlitePersistence;
+
+    #[test]
+    fn blocking_sql_releases_the_only_runtime_worker() -> anyhow::Result<()> {
+        fn heartbeat_progresses(offload: bool) -> anyhow::Result<bool> {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .enable_all()
+                .build()?;
+            let persistence = SqlitePersistence::new(":memory:")?;
+            let (entered_tx, entered_rx) = mpsc::channel();
+            let (release_tx, release_rx) = mpsc::channel();
+            let blocker = runtime.spawn(async move {
+                let connection_owner = persistence.clone();
+                let operation = move || {
+                    connection_owner.with_connection("globals", |connection| {
+                        connection.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))?;
+                        entered_tx.send(())?;
+                        release_rx.recv_timeout(Duration::from_secs(10))?;
+                        Ok(())
+                    })
+                };
+                if offload {
+                    persistence.run("globals", operation).await
+                } else {
+                    // Negative control: the same SQL holds the only worker,
+                    // as synchronous persistence did before the handoff.
+                    operation()
+                }
+            });
+            entered_rx.recv_timeout(Duration::from_secs(5))?;
+            let (heartbeat_tx, heartbeat_rx) = mpsc::channel();
+            let heartbeat = runtime.spawn(async move { heartbeat_tx.send(()) });
+            let progressed = heartbeat_rx.recv_timeout(Duration::from_secs(2)).is_ok();
+            // Always release the SQL task before checking the result.
+            release_tx.send(())?;
+            runtime.block_on(blocker)??;
+            runtime.block_on(heartbeat)??;
+            Ok(progressed)
+        }
+        assert!(!heartbeat_progresses(false)?, "inline control must block");
+        assert!(heartbeat_progresses(true)?, "admitted SQL must hand off");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cancellation_while_waiting_executes_no_sql() -> anyhow::Result<()> {
+        let persistence = SqlitePersistence::new(":memory:")?;
+        let permit = persistence.access.acquire().await?;
+        let statements = Arc::new(AtomicUsize::new(0));
+        let count = statements.clone();
+        let pending = persistence.clone();
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            entered_tx.send(()).unwrap();
+            pending
+                .run("globals", || {
+                    pending.with_connection("globals", |connection| {
+                        count.fetch_add(1, Ordering::SeqCst);
+                        connection.execute_batch("CREATE TABLE canceled_probe (id INTEGER)")?;
+                        Ok(())
+                    })
+                })
+                .await
+        });
+        entered_rx.await?;
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        drop(permit);
+        persistence
+            .run("globals", || {
+                persistence.with_connection("globals", |connection| {
+                    let tables: i64 = connection.query_row(
+                        "SELECT count(*) FROM sqlite_master WHERE name = 'canceled_probe'",
+                        [],
+                        |row| row.get(0),
+                    )?;
+                    assert_eq!(tables, 0);
+                    Ok(())
+                })
+            })
+            .await?;
+        assert_eq!(statements.load(Ordering::SeqCst), 0);
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn failed_transaction_rolls_back_before_reuse_and_reopen() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("rollback.sqlite");
+        let path = path.to_str().unwrap();
+        let persistence = SqlitePersistence::new(path)?;
+        let result: anyhow::Result<()> = persistence
+            .run("write", || {
+                persistence.with_connection("write", |connection| {
+                    connection.execute_batch("CREATE TABLE rollback_probe (id INTEGER)")?;
+                    let tx = connection.transaction()?;
+                    tx.execute("INSERT INTO rollback_probe VALUES (1)", [])?;
+                    anyhow::bail!("injected error before commit")
+                })
+            })
+            .await;
+        assert!(result.is_err());
+        persistence
+            .run("globals", || {
+                persistence.with_connection("globals", |connection| {
+                    assert!(connection.is_autocommit());
+                    Ok(())
+                })
+            })
+            .await?;
+        drop(persistence);
+        let reopened = SqlitePersistence::new(path)?;
+        reopened
+            .run("globals", || {
+                reopened.with_connection("globals", |connection| {
+                    let rows: i64 =
+                        connection.query_row("SELECT count(*) FROM rollback_probe", [], |row| {
+                            row.get(0)
+                        })?;
+                    assert_eq!(rows, 0);
+                    Ok(())
+                })
+            })
+            .await?;
+        Ok(())
+    }
 
     /// One indexed key and its history: `(ts, Some(v))` is a live write of
     /// value `v`, `(ts, None)` is a tombstone.
