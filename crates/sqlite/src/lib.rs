@@ -732,9 +732,9 @@ impl PersistenceReader for SqlitePersistence {
         let mut min_ts = Timestamp::MAX;
         self.run("previous_revisions", || {
             self.with_connection("previous_revisions", |connection| {
+                let mut stmt = connection.prepare(PREV_REV_QUERY)?;
                 for (id, ts) in ids {
                     min_ts = cmp::min(ts, min_ts);
-                    let mut stmt = connection.prepare(PREV_REV_QUERY)?;
                     let internal_id = id.internal_id();
                     let params = params![&id.table().0[..], &internal_id[..], &u64::from(ts)];
                     let mut row_iter = stmt.query_map(params, load_document_row)?;
@@ -772,8 +772,8 @@ impl PersistenceReader for SqlitePersistence {
         let mut out = BTreeMap::new();
         self.run("previous_revisions", || {
             self.with_connection("previous_revisions", |connection| {
+                let mut stmt = connection.prepare(EXACT_REV_QUERY)?;
                 for DocumentPrevTsQuery { id, ts, prev_ts } in ids {
-                    let mut stmt = connection.prepare(EXACT_REV_QUERY)?;
                     let internal_id = id.internal_id();
                     let params = params![&id.table().0[..], &internal_id[..], &u64::from(prev_ts)];
                     let mut row_iter = stmt.query_map(params, load_document_row)?;
@@ -1667,6 +1667,80 @@ mod tests {
         let out_of_range =
             TimestampRange::new(Timestamp::try_from(100u64)?..Timestamp::try_from(200u64)?);
         assert!(run_load(&persistence, out_of_range, Order::Asc, 2)
+            .await?
+            .is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn revision_batches_rebind_ids_timestamps_and_tombstones() -> anyhow::Result<()> {
+        use std::collections::{
+            BTreeMap,
+            BTreeSet,
+        };
+
+        use common::persistence::DocumentPrevTsQuery;
+
+        let mut specs = vec![];
+        for tablet_n in [1, 2] {
+            for doc_n in 1..=4 {
+                for ts in [10, 20, 30] {
+                    specs.push(LogEntrySpec {
+                        ts,
+                        tablet_n,
+                        doc_n,
+                        value: (ts != 20).then_some(i64::from(doc_n)),
+                    });
+                }
+            }
+        }
+        let (persistence, _dir) = make_log_fixture(&specs).await?;
+        let mut previous = BTreeSet::new();
+        let mut exact = BTreeSet::new();
+        let mut expected_previous = BTreeMap::new();
+        let mut expected_exact = BTreeMap::new();
+        for spec in &specs {
+            let entry = log_entry(spec)?;
+            let id = entry.id;
+            let query_ts = Timestamp::try_from(spec.ts + 1)?;
+            let key = (entry.id, query_ts);
+            previous.insert(key);
+            expected_previous.insert(key, entry.clone());
+            let key = DocumentPrevTsQuery {
+                id: entry.id,
+                ts: query_ts,
+                prev_ts: entry.ts,
+            };
+            exact.insert(key.clone());
+            expected_exact.insert(key, entry);
+            // Misses interleaved with hits must not reuse a preceding row.
+            let missing = Timestamp::try_from(1u64)?;
+            previous.insert((id, missing));
+            exact.insert(DocumentPrevTsQuery {
+                id,
+                ts: query_ts,
+                prev_ts: missing,
+            });
+        }
+        let validator = Arc::new(NoopRetentionValidator);
+        assert_eq!(
+            persistence
+                .previous_revisions(previous, validator.clone())
+                .await?,
+            expected_previous
+        );
+        assert_eq!(
+            persistence
+                .previous_revisions_of_documents(exact, validator)
+                .await?,
+            expected_exact
+        );
+        assert!(persistence
+            .previous_revisions(BTreeSet::new(), Arc::new(NoopRetentionValidator))
+            .await?
+            .is_empty());
+        assert!(persistence
+            .previous_revisions_of_documents(BTreeSet::new(), Arc::new(NoopRetentionValidator))
             .await?
             .is_empty());
         Ok(())
