@@ -232,65 +232,49 @@ LIMIT {page_size}
 
         let StartIncluded(ref start) = interval.start;
         let start_bytes = &start[..];
-
-        params.push(&start_bytes);
-        let lower = format!(" AND key >= ${}", params.len());
-
+        let cursor_bytes = cursor.map(|key| &key.0[..]);
+        // Use one bound on each side so the PK seek starts at this page's cursor.
+        let (lower_bytes, lower_op) = match (order, cursor_bytes) {
+            (Order::Asc, Some(cursor)) if cursor >= start_bytes => (cursor, ">"),
+            _ => (start_bytes, ">="),
+        };
+        params.push(&lower_bytes);
+        let lower = format!(" AND B.key {lower_op} ${}", params.len());
         let end_bytes = match interval.end {
-            End::Excluded(ref t) => Some(&t[..]),
+            End::Excluded(ref end) => Some(&end[..]),
             End::Unbounded => None,
         };
+        let end_bytes = match (order, cursor_bytes, end_bytes) {
+            (Order::Desc, Some(cursor), Some(end)) => Some(cursor.min(end)),
+            (Order::Desc, Some(cursor), None) => Some(cursor),
+            (_, _, end) => end,
+        };
         let upper = match end_bytes {
-            Some(ref t) => {
-                params.push(t);
-                format!(" AND key < ${}", params.len())
+            Some(ref end) => {
+                params.push(end);
+                format!(" AND B.key < ${}", params.len())
             },
-            None => "".to_owned(),
+            None => String::new(),
         };
-
-        let cursor_bytes = cursor.map(|key| &key.0[..]);
-        let cursor_bound = match cursor_bytes {
-            Some(ref t) => {
-                params.push(t);
-                match order {
-                    Order::Asc => format!(" AND key > ${}", params.len()),
-                    Order::Desc => format!(" AND key < ${}", params.len()),
-                }
-            },
-            None => "".to_owned(),
-        };
-
         let order = match order {
             Order::Asc => "ASC",
             Order::Desc => "DESC",
         };
-        // The inner subquery is bounded by `LIMIT`: `GROUP BY` over a prefix
-        // of the `(index_id, key, ts)` primary key streams groups in key
-        // order, so SQLite stops scanning after `batch_size` keys instead of
-        // materializing the entire interval. `B.deleted` is selected (not
-        // filtered in the join) so that tombstoned keys count toward the
-        // page: otherwise a page full of tombstones would be
-        // indistinguishable from the end of the interval.
+        // Walk keys in PK order and select the last visible revision per key.
+        // Keep tombstones in the page so a deleted page still advances the cursor.
         let query = format!(
             r#"
 SELECT B.key, B.ts, B.document_id, C.table_id, C.json_value, C.prev_ts, B.deleted
-FROM (
-    SELECT index_id, key, MAX(ts) as max_ts
-    FROM indexes
-    WHERE index_id = $1 AND ts <= $2{lower}{upper}{cursor_bound}
-    GROUP BY index_id, key
-    ORDER BY key {order}
-    LIMIT {batch_size}
-) A
-JOIN indexes B
-ON A.index_id = B.index_id
-AND A.key = B.key
-AND A.max_ts = B.ts
+FROM indexes B
 LEFT JOIN documents C
-ON B.ts = C.ts
-AND B.table_id = c.table_id
-AND B.document_id = C.id
+ON B.ts = C.ts AND B.table_id = C.table_id AND B.document_id = C.id
+WHERE B.index_id = $1
+AND B.ts = (
+    SELECT MAX(X.ts) FROM indexes X
+    WHERE X.index_id = B.index_id AND X.key = B.key AND X.ts <= $2
+){lower}{upper}
 ORDER BY B.key {order}
+LIMIT {batch_size}
 "#,
         );
 

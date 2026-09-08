@@ -102,11 +102,11 @@ pub mod log_sinks;
 pub mod logs;
 pub mod node_action_callbacks;
 pub mod parse;
-pub mod proxy;
 pub mod public_api;
 pub mod router;
 pub mod scheduling;
 pub mod schema;
+pub mod site;
 pub mod snapshot_export;
 pub mod snapshot_import;
 pub mod storage;
@@ -145,6 +145,16 @@ pub struct RouterState {
     pub api: Arc<dyn ApplicationApi>,
     pub runtime: ProdRuntime,
     pub subscription_reconnect_rate_limiter: Option<Arc<SubscriptionReconnectRateLimiter>>,
+}
+
+impl From<&LocalAppState> for RouterState {
+    fn from(st: &LocalAppState) -> Self {
+        Self {
+            api: Arc::new(st.application.clone()),
+            runtime: st.application.runtime(),
+            subscription_reconnect_rate_limiter: None,
+        }
+    }
 }
 
 #[derive(Serialize)]
