@@ -243,3 +243,285 @@ APT/runtime ainda têm insumos flutuantes: reconstruir não garante bytes/digest
 idênticos. A referência publicada identifica o artefato efetivamente testado.
 Publicação da candidata não implica deploy, atualização de catálogo/default,
 migração ou validação do aplicativo real.
+
+# Candidata 5 — experimental, em andamento
+
+Base congelada: commit `54b5cc413a2f469c725231b82d3832082651d4d1` (C4 publicada).
+Nesta fase não há commit, publicação nem deploy; as alterações circulam como
+patches com SHA-256 sobre essa base. **Medido** identifica execução com
+artefato; **verificado** identifica código lido; **hipótese** identifica ganho
+ainda não demonstrado. Esta seção cobre as partes de scheduler e HTTP; o
+trabalho de SQLite é descrito separadamente por quem o implementa.
+
+## P4 — scheduled mutation sobrevive ao system timeout
+
+**Verificado (C4):** `DATABASE_UDF_SYSTEM_TIMEOUT` mede o tempo acumulado que um
+UDF passa pausado em syscalls (`crates/isolate/src/timeout.rs`). Ao estourar, o
+isolate é terminado com um erro `BadRequest` de short message
+`SystemTimeoutError` (`crates/isolate/src/termination.rs`), e o scheduler trata
+todo `BadRequest` como erro determinístico de usuário: a scheduled mutation é
+marcada `failed` na primeira tentativa, sem retry
+(`crates/application/src/scheduled_jobs/mod.rs`, ramo
+`is_deterministic_user_error`). Nada é commitado: a transação, incluindo o
+registro `inProgress` preparado antes de executar, é descartada. Um loop que
+se reagenda a si mesmo, como o `loop:main` do workpool, perde a próxima
+geração; o componente só reage no healthcheck de 30 minutos.
+
+**Verificado (patch):** o ramo determinístico passa a excluir
+`SystemTimeoutError`, que segue o caminho de erro de sistema já existente:
+`execute_job` → `schedule_retry`, com `attempts.system_errors += 1`, backoff
+exponencial com jitter de 500 ms até `SCHEDULED_JOB_MAX_BACKOFF` (2 h por
+padrão), log de erro e contador `scheduled_job_result_total` por tentativa. O
+job aguarda fora das vagas do executor. Actions não mudam: uma action cujo
+`runMutation` estoura o timeout continua terminando `failed`. Não há knob novo;
+a semântica é a mesma aplicada a qualquer outro erro de sistema. Um job que
+estoura sempre continua visível como falhas repetidas, em vez de encerrar a
+cadeia em silêncio.
+
+**Limite:** o upstream marca o timeout como `BadRequest` porque algumas funções
+o atingem de forma determinística. Nesse caso a mudança troca uma falha
+terminal por retentativas espaçadas até 2 h, cada uma registrada. Não se promete
+recuperação em 60 s: a espera é a do backoff persistido. Retry de mutation não
+duplica efeitos: a mutation é transacional e o retry é o mesmo mecanismo já
+usado para OCC. Nenhuma promessa de exatamente-uma-vez para actions.
+
+## Gate E4 — recuperação sob timeout forçado
+
+O [gate de recuperação](test-recovery.mjs) força o timeout sem tocar em
+código, mas não basta zerar o orçamento. **Verificado:** o poller do timeout
+(`crates/isolate/src/timeout.rs`, `go` e `termination_reason_or_wait`) só
+acorda no deadline de usuário, 1 s após o início da execução, ou ao fim de uma
+pausa que ele já observava; o início de uma pausa não o acorda. Com
+`DATABASE_UDF_SYSTEM_TIMEOUT_SECONDS=0`, morre com `SystemTimeoutError` apenas
+a função que ainda está pausada em t = 1 s. Uma função rápida termina antes e
+sobrevive ao knob. A primeira versão deste gate assumiu que o knob sozinho era
+determinístico; ele passou três vezes no controle C4 porque as funções eram
+lentas no boot frio de um único CPU, e falhou na C5-a quando a query de sonda
+respondeu em 19 ms. A correção é uma injeção real: `FUNRUN_ISOLATE_ACTIVE_THREADS=1`
+e uma V8 action de laço longo mantida em execução pelo harness. Ela segura o
+único permit de isolate ativo, e toda outra execução fica parada na pausa
+`concurrency_permit_reacquire` na primeira syscall, ainda pausada em t = 1 s.
+Essa pausa é uma das causas reais listadas nos logs de system timeout do
+incidente do workpool, não um artifício. O fixture `PauseClient` do OSS é um
+stub (`crates/common/src/pause.rs`) e o crate `application` não tem testes,
+portanto a injeção por seam Rust proposta na auditoria não existe neste
+repositório; o gate de imagem é a alternativa.
+
+**Verificado durante a construção do gate, com log bruto:** só morre quem
+faz uma ida real ao banco. `db.insert` é bufferizado no write set da transação
+de forma síncrona e nunca solta o permit; uma leitura (`db.query`,
+`queryStreamNext`) é uma syscall assíncrona que solta o permit por mais de
+100 µs, tempo suficiente para o hog na cabeça da fila tomá-lo
+(`crates/isolate/src/concurrency_limiter.rs`, `ConcurrencyPermit::drop`
+notifica um waiter de baixa prioridade). Por isso os jobs-alvo leem três vezes
+antes de escrever ou de lançar erro, como fazem os handlers reais. Também
+verificado: o `scheduler.cancel` de uma Node action é rejeitado pelo validador
+de argumentos do node-executor desta árvore, que exige um campo `version`
+(`npm-packages/node-executor/src/syscalls.ts`, `syscallCancelJob`) que o
+próprio `scheduler_impl.ts` não envia; o gate cancela pelo endpoint admin
+`POST /api/cancel_job` (`crates/local_backend/src/scheduling.rs`), em Rust.
+
+Quatro jobs são agendados em instantes separados por 8 s com knobs normais
+(funções que chegam juntas revezam o permit entre si e escapam): **T1**
+(mutation transitória), **F** (mutation que lança erro), **N** (Node action que
+grava via `runMutation`) e **E** (mutation a cancelar). O backend para antes do
+vencimento, volta com o knob em 0 e o permit esgotado por `--persist-seconds`,
+e volta de novo com knobs normais. Nessa fase queries também morrem; a
+observação usa `/metrics`, logs e uma Node action de cancelamento, que chega ao
+backend pelo callback `/api/actions/cancel_job` em Rust, sem permit de isolate. Env de laboratório
+declarado na saída: `SCHEDULED_JOB_MAX_BACKOFF_SECS=60`, só para limitar a
+espera da última fase. O deploy do código acontece antes do knob 0, porque o
+mesmo knob alimenta os ambientes de analyze/schema/auth.
+
+```bash
+export CONVEX_CLI_REPO=/path/to/built-convex-checkout
+export CANDIDATE_CPUSET=0
+node self-hosted/test-recovery.mjs IMAGEM --persist-seconds 300 --expect c4|c5 --out resultado.json
+```
+
+**Medido — controle C4** (`amage-audit:candidate4-capacity`, 300 s, CPU 0,
+SQLite e PostgreSQL com resultados idênticos):
+
+| Observação                                               | C4                                             |
+| -------------------------------------------------------- | ---------------------------------------------- |
+| Backend com knob 0 boota e responde `/version`           | 30/30 amostras                                 |
+| Query sob knob 0                                         | falha com o timeout de system operations       |
+| `scheduled_job_result_total{status="success"}` na fase 0 | +4, com os quatro UDFs falhando                |
+| Linhas de retry do scheduler no log                      | 0                                              |
+| Cancel via Node action sob knob 0                        | action executa; cancel rejeitado, job já failed |
+| Estados após normalizar                                  | T1, F, N, E = `failed`                         |
+| Mensagens gravadas por T1 / N / E                        | 0 / 0 / 0                                      |
+
+O contador de sucesso do executor cresce quando o UDF falhou: ele mede
+`execute_job` retornar `Ok`, não digestão. Não usar essa série como "jobs
+concluídos".
+
+**Medido — like-for-like C4 × C5-a** (mesma injeção, 300 s, CPU 0, SQLite e
+PostgreSQL; brutos no registro da C5, `fable-gate-e4-results/`):
+
+| Observação                                  | C4 (sqlite / pg)         | C5-a (sqlite / pg)             |
+| ------------------------------------------- | ------------------------ | ------------------------------ |
+| Injeção válida (T1 e F com timeout)         | sim / sim                | sim / sim                      |
+| Retries do scheduler em T1, F               | 0, 0 / 0, 0              | 1, 14 / 16, 14                 |
+| T1 após normalizar                          | `failed`, 0 msg          | `success`, 1 msg (nos dois)    |
+| F (erro determinístico)                     | `failed`                 | `failed`                       |
+| N (Node action que grava via `runMutation`) | `failed`, 0 msg          | `failed`, 0 msg                |
+| E (cancelado na fase 1)                     | `canceled`, 0 msg        | `canceled`, 0 msg              |
+| `scheduled_job_result_total` na fase 1      | success +4 / +4          | developer_error +16 / +30      |
+
+No SQLite da C5-a, T1 morreu uma vez e a segunda tentativa passou ainda na
+fase persistente, por uma brecha na starvation; no PostgreSQL morreu 16 vezes
+e só passou depois de normalizar. Nos dois casos a diferença contra a C4 é a
+mesma: retry após `SystemTimeoutError` em vez de `failed` terminal. Actions
+continuam sem retry e o cancelamento vence a retentativa.
+
+**Medido — aceitação e variante B:** o [executor de aceite](test-candidate.mjs)
+completo passou na C5-a e na C5-b (SQLite e PostgreSQL, identidade pelo
+manifesto C5 com `Cargo.lock` no hash). A mesma prova de recuperação, em
+SQLite por 60 s, passou na C5-b: T1 com 7 retentativas classificadas por
+timeout de execução e depois `success`, F `failed`, N `failed`, E `canceled`.
+
+## P5 — fila de admissão HTTP medida de dentro
+
+**Verificado (C4):** `GlobalConcurrencyLimitLayer` adquire a vaga em
+`poll_ready`, que roda para a pilha inteira antes de qualquer `call`. O log de
+acesso, as estatísticas por rota e o timeout do serviço só começam depois. A
+espera pela vaga era invisível ao processo e só aparecia pareando emissor e log
+de fora, como nos ensaios da C4.
+
+**Verificado (patch):** uma layer mais externa cronometra o próprio
+`poll_ready` e registra `http_admission_wait_seconds{service}`, com
+`service="backend"` na 3210 e `backend_http_proxy` na 3211. O limitador, o
+log, as estatísticas e o timeout ficam intactos. Uma amostra por ciclo: o
+primeiro `poll_ready` arma o relógio, o `Ready` seguinte registra, polls
+repetidos antes de `call` não somam, `call` abre o próximo ciclo; tempo ocioso
+entre `Ready` e `call` não conta; clone de um service pendente começa ciclo
+próprio; service descartado enquanto espera não registra. Teste unitário
+`admission_wait_tests` cobre exatamente essa sequência com um service falso.
+
+**Semântica e exclusões:** o relógio começa no primeiro poll do request, depois
+de o servidor ler os headers e agendar a task da conexão. Não inclui backlog
+TCP, fila de socket no kernel, TLS nem latência de agendamento do runtime. O
+resíduo `gap externo − admission` é transporte e runtime, e cresce sob
+saturação de CPU. Não se espera igualdade com o gap do harness; a validação
+(G1) compara contagem exata por serviço, média dentro de ±10 % e a mesma ordem
+de grandeza dos percentis, em três células: 16 vagas a 240 msg/min, 4 vagas a
+240 msg/min emulando a C3, e 16 vagas a 960 msg/min. **Ainda não medido.**
+
+## Métricas do runtime Tokio
+
+**Verificado (C4):** o processo registra apenas o coletor de tasks do
+`tokio-metrics-collector` (`crates/common/src/runtime/mod.rs`, ao criar
+`GLOBAL_TASK_MANAGER`); o coletor de runtime existe no mesmo crate, compilado
+porque o workspace ativa `tokio_unstable`, mas `ProdRuntime::init_tokio` nunca o
+registrava. Sem ele não há como ver, por dentro, o custo de `block_in_place`
+(handoff de worker) nem a saturação do runtime que explica o resíduo entre o
+gap externo e a fila de admissão.
+
+**Verificado (patch):** `register_tokio_runtime_metrics(handle)` registra o
+`RuntimeCollector` no mesmo registry, uma chamada logo após construir o
+runtime. Séries novas, sem namespace: `tokio_workers_count`,
+`tokio_total_park_count`, `tokio_total_noop_count`, `tokio_total_steal_count`,
+`tokio_total_steal_operations`, `tokio_num_remote_schedules`,
+`tokio_total_local_schedule_count`, `tokio_total_overflow_count`,
+`tokio_total_polls_count`, `tokio_total_busy_duration`,
+`tokio_global_queue_depth`, `tokio_total_local_queue_depth`,
+`tokio_budget_forced_yield_count`, `tokio_io_driver_ready_count` e
+`tokio_elapsed`. As `tokio_total_*` são cumulativas (usar deltas entre dumps);
+as `*_depth` são instantâneas. Um scrape vale pelas duas portas, que
+compartilham o registry. Registrar duas vezes é um no-op; outros erros do
+registry falham o boot.
+
+## Achado de instrumentação: `table_summary_finish_bootstrap` sempre `error`
+
+**Verificado (C4 e C5-a, código herdado):**
+`convex_local_backend_database_table_summary_finish_bootstrap_seconds{status="error"}`
+cresce em boots bem-sucedidos. O timer é criado em
+`crates/database/src/committer.rs:721` como `_timer` e nunca recebe
+`.finish()`; o `StatusTimer` rotula `error` no drop
+(`crates/metrics/src/timer.rs`). O `Ok(())` é enviado em `:758` logo antes do
+drop. Portanto o rótulo `error` dessa série não indica falha de boot; o valor
+do tempo continua válido. Ler apenas a duração e ignorar o status até um
+patch futuro chamar `finish()`. A fonte congelada da C5 não foi alterada por
+isso.
+
+## SQLite — admissão assíncrona (P6) e prepared por lote (P12)
+
+Texto do autor da implementação (Codex), integrado sem alteração de conteúdo.
+
+**Verificado:** P6 mantém uma conexão SQLite e o Mutex. Um Semaphore de uma vaga espera assincronamente antes de entrar no helper existente block_in_place; o bloco cobre uma página ou todo o lote de revisões. Uma transação aberta dentro do bloco termina por commit/rollback antes de retornar; cancelar enquanto espera o permit executa zero SQL. Não há leitor paralelo nem spawn_blocking destacado. Fonte na candidata P12: crates/sqlite/src/lib.rs:121 (admissão/handoff), :155 (lock/hold), :735/:775 (prepare uma vez por lote). Os ramos current_thread/sem runtime preservam execução inline e são identificados por flavor.
+
+**Medido localmente:** P6 passou 11 testes, incluindo heartbeat com controle negativo inline num runtime de 1 worker, cancelamento com contador 0 SQL e rollback/reabertura. P12 passou 12, acrescentando rebind hit/miss/tombstone/lote vazio nas duas APIs. Patch P12=2493225a3ac91b4fe457f328e2ebb123fa7eddfc3f91668cf60f522daeae15fa; revisão independente Fable aprovada.
+
+**G3 medido no Namespace:** 330 mil documentos / 100 empresas uniformes, 120 s × 5.000 msg/min = 20 mil webhooks, SQLite WAL/FULL, 6 CPUs / 8 GiB, 64 vagas, 16 MiB/s, 512 sockets. A instrumentada sem P6; B com P6, ordem A–B–B–A, mesma VM, fixture nova. Drenagem 82,046 / 77,127 / 50,961 / 49,605 s. Gap após obter socket p95 5.972,648 / 5.321,665 / 4.160,355 / 4.338,162 ms e p99 6.399,998 / 7.842,989 / 4.207,041 / 4.509,295 ms. Todas corretas: 20 mil IDs / 100 contadores, zero erros/OOM,quick_check e recontagem após SIGKILL.
+
+**Interpretação:** medianas B/A drenagem −2,7 %, gapAfterSocket p95 −8 %, p99 +10,5 %; deriva do controle maior que sinal, sem vencedor de throughput. Benefício específico consistente: resíduo médio gapAfterSocket−admissão cai de 60,51–71,95 ms para 0,44–0,59 ms; inclui transporte/agendamento, não é um cronômetro exclusivo de runtime. Não significa webhook 120× mais rápido. Lock wait p95 em B ~1µs e flavor 100 % multi; a fila mudou para o permit, não sumiu. A conexão ficou ocupada 96–98 % do tempo. Custo: A1/B1 parks 9.576 / 1.273.929; busy do runtime exclui o trabalho transferido e não é CPU. Brutos: namespace/g3-local/measurements, resource-summary.json e g3-summary.json no relatório C5.
+
+**P12 medido separadamente:** B–B+P12–B+P12–B. Custo médio previous_revisions 0,7252 / 0,4205 / 0,4703 / 0,8722 ms, ~44 % menor nas medianas com P12; mesmo SQL/retention/rebind. Drenagem 49,945 / 52,062 / 70,371 / 105,408 s: controle mais que dobrou, então a queda descritiva de 21 % da mediana não prova ganho end-to-end. A seleção provisória B+P12 se justifica pelo custo específico consistente e mudança mínima com teste/revisão, não pelo throughput. Brutos: namespace/p12-local/measurements.
+
+**Limites:** SIGKILL foi após todos os acks, não durante commit; nenhum teste no arquivo de 37 GB, nenhuma prova de falha de energia, nenhum pool de leitores implementado. A distribuição uniforme sintética não representa o tenant dominante, aggregates ou ledger de IA do Uze. WAL foi configuração de laboratório; a imagem preserva os defaults. G4 e tuning de batching ainda em conclusão.
+
+## Imagens experimentais desta rodada
+
+Nenhuma publicada; carregadas de `tar.zst` com SHA-256 conferido, identidade
+verificada pelo executor de aceite com o manifesto C5.
+
+| Imagem                          | Conteúdo                       | Patch (SHA-256, 12)  | Aceite completo | Gate E4              |
+| ------------------------------- | ------------------------------ | -------------------- | --------------- | -------------------- |
+| `amage-audit:candidate5-a`      | C4 + P4 + P5 + runtime + instr | `34b7a0dacd51`       | SQLite e PG     | 2 motores, 300 s     |
+| `amage-audit:candidate5-b`      | C5-a + P6                      | `48b1cdb797bd`       | SQLite e PG     | SQLite, 60 s         |
+| `amage-audit:candidate5-b-p12`  | C5-b + P12                     | `795b36a9298e`       | SQLite e PG     | não repetido (P4 idêntico) |
+
+## Boot com busca (G4, observacional)
+
+Texto do autor da medição (Codex), integrado com tipografia normalizada e sem
+alteração de conteúdo. Não é A/B entre imagens: mede o boot da C5-b-P12 nos
+dois motores, 330 mil documentos com `searchIndex` `search_body` populado,
+300 s a 5.000 msg/min (50 mil webhooks), 100 empresas. Contadores exatos,
+zero erros de carga/OOM, reabertura e SIGKILL após os acks, `quick_check` ok
+no SQLite. Brutos em `namespace/g4-local` (`boot-summary.json` por motor e
+`g4-summary.json`).
+
+**Como ler os tempos:** todos contados desde o `docker start`. "Readiness" é
+o `/version` responder; a "janela estável" começa quando a sonda de leitura,
+iniciada depois da prontidão, passa a responder sem erro, e é confirmada 60 s
+depois. `/version` **não** promete busca pronta: as consultas iniciais que
+falharam com `SearchIndexesUnavailable` foram contadas, não escondidas.
+
+| Restart | PG: readiness | PG: janela estável | PG: bootstrap de busca | SQLite: readiness | SQLite: janela estável | SQLite: bootstrap de busca |
+| ------- | ------------: | -----------------: | ---------------------: | ----------------: | ---------------------: | -------------------------: |
+| 1       | 435,98 ms     | 484,05 ms          | 554,58 ms              | 467,05 ms         | 5.520,66 ms            | 5.585,73 ms                |
+| 2       | 420,63 ms     | 468,55 ms          | 596,17 ms              | 436,12 ms         | 4.990,62 ms            | 5.229,44 ms                |
+| 3       | 412,56 ms     | 454,76 ms          | 544,98 ms              | 445,00 ms         | 5.002,45 ms            | 5.196,93 ms                |
+
+Readiness e janela estável são instantes desde o `docker start`; bootstrap de
+busca é duração. No PG a janela estável abre cerca de 50 ms depois da
+prontidão; no SQLite, cerca de 5 s depois, coincidindo com o fim do bootstrap
+de busca.
+
+Revisões replayadas no bootstrap de busca: PG 1.577 carregadas e 96.199
+descartadas (`skipped`) em todos os restarts, 187.519 bytes relevantes, uma
+consulta inicial `SearchIndexesUnavailable` por restart; SQLite 10.620
+carregadas e 647.822 descartadas, 1.262.721 bytes relevantes, 11/10/10
+consultas iniciais `SearchIndexesUnavailable` e depois estável. PG e SQLite
+partiram de checkpoints diferentes: **não** atribuir a razão entre os tempos
+apenas ao motor. Sem replay menor nos restarts 2 e 3: nenhum checkpoint
+avançou e as mesmas revisões voltaram. Summary bootstrap 9,4–23,6 ms; summary
+finish 3,5–10,3 ms com `status=error` apesar do sucesso (ver achado acima);
+shapes 7,4–20,6 ms.
+
+**Conclusão:** não justifica reduzir a idade global de checkpoint para 600 s
+(P11 sem patch nem knob nesta C5). O que aparece nos dois motores é o stream
+do bootstrap descartando cerca de 61× mais revisões do que usa
+(`stream_revision_pairs_for_indexes` carrega tudo e filtra depois); o
+próximo experimento concreto é filtrar por tabela/índice no stream. Essa
+razão pertence a esta fixture; nada foi medido no arquivo de 37 GB nem em
+produção.
+
+## O que ainda não existe
+
+Os perfis de batching do SQLite (`docs 256 / 256 KiB` e
+`MAX_CONCURRENT_WRITE_BATCHES=1`, medidos em VM separada, G0 dela repetido e
+aprovado); a recomendação final de knobs depende deles e não muda a imagem.
+Publicação de qualquer imagem, validação com o aplicativo real e o filtro por
+tabela/índice no bootstrap de busca.
