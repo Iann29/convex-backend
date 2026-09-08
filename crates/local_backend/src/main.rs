@@ -38,9 +38,13 @@ use local_backend::{
         Subcommand,
     },
     make_app,
-    proxy::dev_site_proxy,
-    router::router,
+    router::{
+        http_action_routes,
+        router,
+    },
+    site::serve_http_actions,
     HttpActionRouteMapper,
+    RouterState,
     MAX_CONCURRENT_REQUESTS,
 };
 use runtime::prod::ProdRuntime;
@@ -179,13 +183,13 @@ async fn run_server_inner(runtime: ProdRuntime, config: LocalConfig) -> anyhow::
     let serve_http_future = http_service.serve(config.http_bind_address(), async move {
         let _ = shutdown_rx_.recv().await;
     });
-    let proxy_future = dev_site_proxy(
+    let site_future = serve_http_actions(
         config.site_bind_address(),
-        config.site_forward_prefix(),
+        http_action_routes().with_state(RouterState::from(&st)),
         shutdown_rx,
     );
 
-    let serve_future = future::try_join(serve_http_future, proxy_future).fuse();
+    let serve_future = future::try_join(serve_http_future, site_future).fuse();
     futures::pin_mut!(serve_future);
 
     // Start shutdown when we get a manual shutdown signal or with the first

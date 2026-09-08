@@ -179,10 +179,6 @@ impl LocalConfig {
         SocketAddr::new(self.interface.into(), self.port)
     }
 
-    pub fn site_forward_prefix(&self) -> String {
-        format!("http://127.0.0.1:{}/http", self.port)
-    }
-
     pub fn site_bind_address(&self) -> Option<([u8; 4], u16)> {
         Some((self.interface.octets(), self.site_proxy_port))
     }
@@ -248,5 +244,4 @@ impl LocalConfig {
             }
         }
     }
-
 }

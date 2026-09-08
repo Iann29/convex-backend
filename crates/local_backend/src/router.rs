@@ -1,6 +1,5 @@
 use std::{
     convert::Infallible,
-    sync::Arc,
     time::Duration,
 };
 
@@ -414,11 +413,7 @@ pub fn router(st: LocalAppState) -> Router {
         // Notably, any layers added here won't apply to common routes
         // added inside `serve_http`
         .nest("/http/", http_action_routes())
-        .with_state(RouterState {
-            api: Arc::new(st.application.clone()),
-            runtime: st.application.runtime(),
-            subscription_reconnect_rate_limiter: None,
-        });
+        .with_state(RouterState::from(&st));
 
     let version = SERVER_VERSION_STR.to_string();
 

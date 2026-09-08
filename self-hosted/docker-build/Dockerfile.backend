@@ -4,22 +4,31 @@
 
 ARG VERGEN_GIT_SHA
 ARG VERGEN_GIT_COMMIT_TIMESTAMP
+ARG CONVEX_RELEASE_VERSION=dev
+# Build against an older glibc than the Ubuntu Noble runtime, with a fixed base.
+ARG CARGO_CHEF_IMAGE=lukemathwalker/cargo-chef:latest-rust-1-bookworm@sha256:b1ed45bf65418f5daa5348b39f05ec6a6f5950996e0b797dbe38326d18d42e41
 
 # cargo-chef is used to cache Rust dependencies and build artifacts
 # It creates a recipe of our dependencies first, then builds them in a separate stage
 # This helps avoid rebuilding dependencies when only first-party source code changes
-FROM lukemathwalker/cargo-chef:latest-rust-1 AS chef
+FROM ${CARGO_CHEF_IMAGE} AS chef
 WORKDIR /tmp
 COPY rust-toolchain .
 # Dummy command to just fetch the toolchain that'll get installed by running `cargo chef`
 RUN rustup self update && rustup toolchain install
 COPY --parents crates* Cargo* ./
-RUN cargo chef prepare --recipe-path recipe.json --bin convex-local-backend
+# Metadata fetches Git dependencies too: honor git-fetch-with-cli and reuse the
+# same dependency caches as cook/build instead of fetching V8 twice.
+COPY .cargo/config.toml ./.cargo/config.toml
+RUN --mount=type=cache,target=/usr/local/cargo/git/db --mount=type=cache,target=/usr/local/cargo/registry/ cargo chef prepare --recipe-path recipe.json --bin convex-local-backend
 
 # Build stage: Compiles the Rust backend with all dependencies
 # Uses cargo-chef's recipe from the previous stage for optimal caching
-FROM lukemathwalker/cargo-chef:latest-rust-1 AS build
+FROM ${CARGO_CHEF_IMAGE} AS build
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# Optional limit for compilation on development hosts and smaller builders.
+ARG CARGO_BUILD_JOBS
 
 # Update APT configuration for Docker builds
 # Sets retry attempts, assumes yes for prompts, and configures dpkg timeout
@@ -91,13 +100,16 @@ COPY . .
 # Must redeclare these as environment variables so that they are available
 ARG VERGEN_GIT_SHA
 ARG VERGEN_GIT_COMMIT_TIMESTAMP
+ARG CONVEX_RELEASE_VERSION
 ENV VERGEN_GIT_SHA=${VERGEN_GIT_SHA}
 ENV VERGEN_GIT_COMMIT_TIMESTAMP=${VERGEN_GIT_COMMIT_TIMESTAMP}
+ENV CONVEX_RELEASE_VERSION=${CONVEX_RELEASE_VERSION}
 RUN --mount=type=cache,target=/root/.local/share/pnpm/store,sharing=locked --mount=type=cache,target=/convex/target/ --mount=type=cache,target=/usr/local/cargo/git/db --mount=type=cache,target=/usr/local/cargo/registry/ <<EOF
 export PROTOC="$(mise which protoc)"
-cargo build --release -p local_backend --bin convex-local-backend
+# Build both binaries with one feature graph instead of recompiling shared
+# dependencies in a second, narrower keybroker invocation.
+cargo build --release -p local_backend -p keybroker --bin convex-local-backend --bin generate_key
 cp target/release/convex-local-backend .
-cargo build --release -p keybroker --bin generate_key
 cp target/release/generate_key .
 EOF
 ARG debug
@@ -107,8 +119,13 @@ RUN if [[ -z "$debug" ]]; then strip ./convex-local-backend; strip ./generate_ke
 # Uses Ubuntu Noble (24.04) as the base image
 FROM ubuntu:noble
 ARG VERGEN_GIT_SHA
+ARG CONVEX_RELEASE_VERSION
+ARG AMAGE_PATCH_SHA256
 LABEL org.opencontainers.repository=https://github.com/get-convex/convex-backend
 LABEL org.opencontainers.image.revision=${VERGEN_GIT_SHA}
+LABEL org.opencontainers.image.version=${CONVEX_RELEASE_VERSION}
+LABEL org.amage.base-revision=${VERGEN_GIT_SHA}
+LABEL org.amage.patch-sha256=${AMAGE_PATCH_SHA256}
 
 WORKDIR /convex
 
@@ -134,6 +151,11 @@ COPY --chmod=744 self-hosted/docker-build/run_backend.sh .
 COPY --chmod=744 self-hosted/docker-build/generate_admin_key.sh .
 
 VOLUME /convex/data
+
+# AMAGE: preserve the previous image's disk-cache default during the upgrade.
+# This is capacity for extracted search indexes, not reserved RAM. Override in
+# the container environment when validating a deployment-specific cache size.
+ENV SEARCHLIGHT_DISK_CACHE_MIB=2048
 
 # Set the backend as the executable
 ENTRYPOINT ["./run_backend.sh"]
