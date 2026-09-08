@@ -18,6 +18,10 @@ use std::{
         Arc,
         LazyLock,
     },
+    task::{
+        ready,
+        Poll,
+    },
     time::{
         Duration,
         Instant,
@@ -104,7 +108,10 @@ use tower_http::cors::{
 use url::Url;
 use utoipa::ToSchema;
 
-use self::metrics::log_http_request;
+use self::metrics::{
+    log_http_admission_wait,
+    log_http_request,
+};
 use crate::{
     dyn_event,
     errors::report_error_sync,
@@ -156,6 +163,20 @@ mod metrics {
         "Time to handle an HTTP request",
         &["endpoint", "method", "status", "client_version", "is_test"]
     );
+    register_convex_histogram!(
+        HTTP_ADMISSION_WAIT_SECONDS,
+        "Time an HTTP request waited for the service's concurrency slot before its middleware \
+         stack started",
+        &["service"]
+    );
+
+    pub fn log_http_admission_wait(service_name: &'static str, wait: Duration) {
+        log_distribution_with_labels(
+            &HTTP_ADMISSION_WAIT_SECONDS,
+            wait.as_secs_f64(),
+            vec![MetricLabel::new("service", service_name)],
+        );
+    }
 
     pub fn log_http_request(
         client_version: &str,
@@ -497,6 +518,200 @@ fn concurrency_metric_name(service_name: &str, namespace: &str) -> String {
         .to_owned()
 }
 
+/// Measures how long a request waits in `poll_ready` for the readiness gates
+/// below it, i.e. the `GlobalConcurrencyLimitLayer` slot. That wait happens
+/// before any `call`, so `log_middleware`, `stats_middleware` and the request
+/// timeout never observe it; this layer wraps the whole stack to record it.
+///
+/// One sample per readiness cycle: the first `poll_ready` starts the clock,
+/// the `Ready` that follows records it, further `poll_ready` calls before
+/// `call` add nothing, and `call` opens the next cycle. Idle time between
+/// `Ready` and `call` is never counted. The clock starts at the first poll,
+/// so kernel socket queues, TLS and runtime scheduling before it are excluded.
+#[derive(Clone)]
+struct AdmissionWaitLayer {
+    service_name: &'static str,
+}
+
+impl<S> Layer<S> for AdmissionWaitLayer {
+    type Service = AdmissionWait<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        AdmissionWait::new(inner, self.service_name, log_http_admission_wait)
+    }
+}
+
+struct AdmissionWait<S> {
+    inner: S,
+    service_name: &'static str,
+    record: fn(&'static str, Duration),
+    /// `Some` while a readiness wait is being timed.
+    wait_start: Option<Instant>,
+    /// Set by the `Ready` that was recorded, cleared by `call`.
+    ready_recorded: bool,
+}
+
+impl<S> AdmissionWait<S> {
+    fn new(inner: S, service_name: &'static str, record: fn(&'static str, Duration)) -> Self {
+        Self {
+            inner,
+            service_name,
+            record,
+            wait_start: None,
+            ready_recorded: false,
+        }
+    }
+}
+
+// A clone starts its own readiness cycle; it must not inherit a wait that
+// began on the service it was cloned from.
+impl<S: Clone> Clone for AdmissionWait<S> {
+    fn clone(&self) -> Self {
+        Self::new(self.inner.clone(), self.service_name, self.record)
+    }
+}
+
+impl<S, R> Service<R> for AdmissionWait<S>
+where
+    S: Service<R>,
+{
+    type Error = S::Error;
+    type Future = S::Future;
+    type Response = S::Response;
+
+    fn poll_ready(&mut self, cx: &mut std::task::Context<'_>) -> Poll<Result<(), S::Error>> {
+        if self.ready_recorded {
+            return self.inner.poll_ready(cx);
+        }
+        let start = *self.wait_start.get_or_insert_with(Instant::now);
+        let result = ready!(self.inner.poll_ready(cx));
+        self.wait_start = None;
+        self.ready_recorded = true;
+        (self.record)(self.service_name, start.elapsed());
+        Poll::Ready(result)
+    }
+
+    fn call(&mut self, req: R) -> Self::Future {
+        self.ready_recorded = false;
+        self.inner.call(req)
+    }
+}
+
+#[cfg(test)]
+mod admission_wait_tests {
+    use std::{
+        cell::{
+            Cell,
+            RefCell,
+        },
+        convert::Infallible,
+        rc::Rc,
+        task::{
+            Context,
+            Poll,
+            Waker,
+        },
+        time::Duration,
+    };
+
+    use futures::future::{
+        ready,
+        Ready,
+    };
+    use tower::Service;
+
+    use super::AdmissionWait;
+
+    thread_local! {
+        static SAMPLES: RefCell<Vec<(&'static str, Duration)>> = const { RefCell::new(Vec::new()) };
+    }
+    fn record(service: &'static str, wait: Duration) {
+        SAMPLES.with(|s| s.borrow_mut().push((service, wait)));
+    }
+    fn samples() -> Vec<(&'static str, Duration)> {
+        SAMPLES.with(|s| s.borrow().clone())
+    }
+
+    /// Pending until `ready` is set; counts `call`s.
+    #[derive(Clone)]
+    struct Gate {
+        ready: Rc<Cell<bool>>,
+        calls: Rc<Cell<u32>>,
+    }
+
+    impl Service<u8> for Gate {
+        type Error = Infallible;
+        type Future = Ready<Result<u8, Infallible>>;
+        type Response = u8;
+
+        fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Infallible>> {
+            if self.ready.get() {
+                Poll::Ready(Ok(()))
+            } else {
+                Poll::Pending
+            }
+        }
+
+        fn call(&mut self, req: u8) -> Self::Future {
+            self.calls.set(self.calls.get() + 1);
+            ready(Ok(req))
+        }
+    }
+
+    #[test]
+    fn one_sample_per_readiness_cycle_and_clones_start_fresh() {
+        let mut cx = Context::from_waker(Waker::noop());
+        let gate = Rc::new(Cell::new(false));
+        let calls = Rc::new(Cell::new(0));
+        let mut svc = AdmissionWait::new(
+            Gate {
+                ready: gate.clone(),
+                calls: calls.clone(),
+            },
+            "unit",
+            record,
+        );
+        SAMPLES.with(|s| s.borrow_mut().clear());
+
+        assert!(svc.poll_ready(&mut cx).is_pending());
+        assert!(svc.wait_start.is_some());
+        // Cloning a pending service must not carry its wait over.
+        let mut cloned = svc.clone();
+        assert!(cloned.wait_start.is_none() && !cloned.ready_recorded);
+
+        std::thread::sleep(Duration::from_millis(20));
+        gate.set(true);
+        assert!(svc.poll_ready(&mut cx).is_ready());
+        // Repeated readiness polls before `call` add no sample.
+        assert!(svc.poll_ready(&mut cx).is_ready());
+        drop(svc.call(1));
+        let recorded = samples();
+        assert_eq!(recorded.len(), 1, "exactly one sample per request");
+        assert_eq!(recorded[0].0, "unit");
+        assert!(recorded[0].1 >= Duration::from_millis(20), "{recorded:?}");
+
+        // The clone times only its own cycle, which is immediately ready.
+        assert!(cloned.poll_ready(&mut cx).is_ready());
+        drop(cloned.call(2));
+        let recorded = samples();
+        assert_eq!(recorded.len(), 2);
+        assert!(recorded[1].1 < Duration::from_millis(20), "{recorded:?}");
+
+        // `call` opened a new cycle on the original service.
+        assert!(svc.poll_ready(&mut cx).is_ready());
+        drop(svc.call(3));
+        assert_eq!(samples().len(), 3);
+        assert_eq!(calls.get(), 3);
+
+        // A service dropped while still pending never records.
+        gate.set(false);
+        let mut waiting = cloned.clone();
+        assert!(waiting.poll_ready(&mut cx).is_pending());
+        drop(waiting);
+        assert_eq!(samples().len(), 3);
+    }
+}
+
 /// Router + Middleware for a Convex service
 pub struct ConvexHttpService {
     router: Router,
@@ -534,6 +749,10 @@ impl ConvexHttpService {
         let router = router
             .layer(
                 ServiceBuilder::new()
+                    // Outermost: its `poll_ready` brackets the concurrency
+                    // slot acquisition below. It adds no `call` work, so the
+                    // log/stats clocks keep starting after admission.
+                    .layer(AdmissionWaitLayer { service_name })
                     // Order important. Log/stats first because they are infallible.
                     .layer(axum::middleware::from_fn(tokio_instrumentation_middleware))
                     .layer(axum::middleware::from_fn(log_middleware))
