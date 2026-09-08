@@ -244,14 +244,17 @@ idênticos. A referência publicada identifica o artefato efetivamente testado.
 Publicação da candidata não implica deploy, atualização de catálogo/default,
 migração ou validação do aplicativo real.
 
-# Candidata 5 — experimental, em andamento
+# Candidata 5 — publicada para validação
 
-Base congelada: commit `54b5cc413a2f469c725231b82d3832082651d4d1` (C4 publicada).
-Nesta fase não há commit, publicação nem deploy; as alterações circulam como
-patches com SHA-256 sobre essa base. **Medido** identifica execução com
-artefato; **verificado** identifica código lido; **hipótese** identifica ganho
-ainda não demonstrado. Esta seção cobre as partes de scheduler e HTTP; o
-trabalho de SQLite é descrito separadamente por quem o implementa.
+Commits sobre a C4 publicada (`54b5cc413a2f469c725231b82d3832082651d4d1`),
+em revisão no [PR #2](https://github.com/Iann29/convex-backend/pull/2),
+rascunho. A identidade da imagem continua sendo o diff completo do runtime
+contra o upstream `849a6fc605b5`, agora incluindo `Cargo.lock`. A candidata
+selecionada está publicada para validação; **nenhum deploy** foi feito.
+**Medido** identifica execução com artefato; **verificado** identifica código
+lido; **hipótese** identifica ganho ainda não demonstrado. As seções de
+scheduler, HTTP, runtime e boot são do editor deste arquivo; as de SQLite e
+batching, do autor da implementação.
 
 ## P4 — scheduled mutation sobrevive ao system timeout
 
@@ -277,6 +280,15 @@ job aguarda fora das vagas do executor. Actions não mudam: uma action cujo
 a semântica é a mesma aplicada a qualquer outro erro de sistema. Um job que
 estoura sempre continua visível como falhas repetidas, em vez de encerrar a
 cadeia em silêncio.
+
+**Anotação operacional (verificada):** a mudança só alcança execuções que
+falham **depois** da troca de imagem. Um job que já terminou `failed` na C4
+não é ressuscitado: `SchedulerModel::complete` remove o `next_ts` e grava
+`completed_ts` (`crates/model/src/scheduled_jobs/mod.rs`), o executor só
+consulta jobs com `next_ts`, e o registro é coletado após a retenção. Se um
+loop já estava `failed` antes da troca, a recuperação é do componente
+(healthcheck/`forceKick` do workpool) ou um novo agendamento manual; a troca
+de imagem sozinha não o reanima.
 
 **Limite:** o upstream marca o timeout como `BadRequest` porque algumas funções
 o atingem de forma determinística. Nesse caso a mudança troca uma falha
@@ -457,14 +469,26 @@ Texto do autor da implementação (Codex), integrado sem alteração de conteúd
 
 **Interpretação:** medianas B/A drenagem −2,7 %, gapAfterSocket p95 −8 %, p99 +10,5 %; deriva do controle maior que sinal, sem vencedor de throughput. Benefício específico consistente: resíduo médio gapAfterSocket−admissão cai de 60,51–71,95 ms para 0,44–0,59 ms; inclui transporte/agendamento, não é um cronômetro exclusivo de runtime. Não significa webhook 120× mais rápido. Lock wait p95 em B ~1µs e flavor 100 % multi; a fila mudou para o permit, não sumiu. A conexão ficou ocupada 96–98 % do tempo. Custo: A1/B1 parks 9.576 / 1.273.929; busy do runtime exclui o trabalho transferido e não é CPU. Brutos: namespace/g3-local/measurements, resource-summary.json e g3-summary.json no relatório C5.
 
-**P12 medido separadamente:** B–B+P12–B+P12–B. Custo médio previous_revisions 0,7252 / 0,4205 / 0,4703 / 0,8722 ms, ~44 % menor nas medianas com P12; mesmo SQL/retention/rebind. Drenagem 49,945 / 52,062 / 70,371 / 105,408 s: controle mais que dobrou, então a queda descritiva de 21 % da mediana não prova ganho end-to-end. A seleção provisória B+P12 se justifica pelo custo específico consistente e mudança mínima com teste/revisão, não pelo throughput. Brutos: namespace/p12-local/measurements.
+**P12 medido separadamente:** B–B+P12–B+P12–B. Custo médio previous_revisions 0,7252 / 0,4205 / 0,4703 / 0,8722 ms, ~44 % menor nas medianas com P12; mesmo SQL/retention/rebind. Drenagem 49,945 / 52,062 / 70,371 / 105,408 s: controle mais que dobrou, então a queda descritiva de 21 % da mediana não prova ganho end-to-end. A seleção de B+P12 como candidata publicada se justifica pelo custo específico consistente e mudança mínima com teste/revisão, não pelo throughput. Brutos: namespace/p12-local/measurements.
 
-**Limites:** SIGKILL foi após todos os acks, não durante commit; nenhum teste no arquivo de 37 GB, nenhuma prova de falha de energia, nenhum pool de leitores implementado. A distribuição uniforme sintética não representa o tenant dominante, aggregates ou ledger de IA do Uze. WAL foi configuração de laboratório; a imagem preserva os defaults. G4 e tuning de batching ainda em conclusão.
+**Limites:** SIGKILL foi após todos os acks, não durante commit; nenhum teste no arquivo de 37 GB, nenhuma prova de falha de energia, nenhum pool de leitores implementado. A distribuição uniforme sintética não representa o tenant dominante, aggregates ou ledger de IA do Uze. WAL foi configuração de laboratório; a imagem preserva os defaults. G4 e o tuning de batching estão fechados abaixo.
 
-## Imagens experimentais desta rodada
+## Imagens desta rodada e publicação
 
-Nenhuma publicada; carregadas de `tar.zst` com SHA-256 conferido, identidade
-verificada pelo executor de aceite com o manifesto C5.
+Carregadas de `tar.zst` com SHA-256 conferido e identidade verificada pelo
+executor de aceite com o manifesto C5. A candidata **C5-b-p12** foi publicada
+em 08/09/2026 por retag da imagem já testada, sem rebuild:
+
+```text
+ghcr.io/amageweb/convex-backend@sha256:fd744b3dbe917df467be827157192171e7a869da4bb87be346a35bf559df92eb
+```
+
+Tag: `ghcr.io/amageweb/convex-backend:amage-20260908-candidate.5-b-p12-795b36a9298e`.
+Manifesto amd64 `sha256:783b7d209c85…`, config `sha256:e5427d62ab20…`; o índice
+traz também o descritor de atestação do buildx. **Verificado de forma
+independente:** o pull pelo digest devolve o mesmo Image ID da imagem testada
+(`fd744b3d…`) e as mesmas labels de versão, base e patch. Publicar não é
+deployar: nenhum deployment, catálogo ou default foi alterado.
 
 | Imagem                          | Conteúdo                       | Patch (SHA-256, 12)  | Aceite completo | Gate E4              |
 | ------------------------------- | ------------------------------ | -------------------- | --------------- | -------------------- |
@@ -518,10 +542,58 @@ próximo experimento concreto é filtrar por tabela/índice no stream. Essa
 razão pertence a esta fixture; nada foi medido no arquivo de 37 GB nem em
 produção.
 
+## Batching de escrita no SQLite (tuning de laboratório, sem mudança na imagem)
+
+Medido pelo autor do SQLite (Codex) numa segunda VM, ordem espelhada
+(default → 256 docs → 256 + um escritor → 256 + um escritor → 256 docs →
+default), mesma imagem publicada, 6 CPUs / 8 GiB, WAL/FULL, 16 MiB/s, 64
+vagas, 330 mil documentos / 100 empresas, 120 s a 5.000 msg/min. Knobs do
+**processo** do backend: `COMMITTER_MAX_WRITE_BATCH_DOCUMENTS=256`,
+`COMMITTER_MAX_WRITE_BATCH_BYTES=262144` e, no "um escritor",
+`COMMITTER_MAX_CONCURRENT_WRITE_BATCHES=1`; `delay` de 1 ms inalterado.
+Sempre 20 mil commits lógicos / 1,22 milhão de documentos por célula.
+
+| # | Perfil            | Drenagem | gap após socket p95 / p99 | Commits por lote | p95 de `database_commit_seconds` | Lotes físicos |
+| - | ----------------- | -------: | ------------------------: | ---------------: | -------------------------------: | ------------: |
+| 1 | default           | 64,6 s   | 4.910 / 5.071 ms          | 1,46             | 77–88 ms                         | 13.690        |
+| 2 | 256 docs          | 28,1 s   | 4.036 / 4.196 ms          | 1,76             | 68–77 ms                         | 11.354        |
+| 3 | 256 + um escritor | 17,1 s   | 3.702 / 3.822 ms          | 3,32             | 215–245 ms                       | 6.031         |
+| 4 | 256 + um escritor | 13,8 s   | 3.512 / 3.755 ms          | 4,42             | 215–245 ms                       | 4.521         |
+| 5 | 256 docs          | 1,5 s    | 833 / 1.006 ms            | 1,51             | 53–60 ms                         | 13.291        |
+| 6 | default           | 27,0 s   | 3.621 / 3.738 ms          | 1,63             | 68–77 ms                         | 12.281        |
+
+As seis células preservaram 20 mil IDs aceitos/únicos/concluídos/reabertos,
+100 empresas × 200, zero erros de requisição/OOM, SIGKILL após os acks e
+`quick_check` ok. Não é zero OCC: o delta de `occ_retries_total_sum` foi
+10.000 / 10.000 / 10.000 / 10.000 / 9.999 / 10.000 por célula, idêntico a
+`errors_reported_total{type="occ"}`; são tentativas recuperadas, sem perda
+final. CPU média por célula 361–436 %.
+
+**Leitura:** a volta derrubou a ordenação da ida: o default caiu de 64,6 s
+para 27,0 s sem mudar nada, e a célula 5 drenou em 1,5 s. A deriva domina.
+O mecanismo do escritor único está confirmado (3,3–4,4 commits por lote,
+metade dos lotes físicos), **mas** custa cauda de commit cerca de 3× maior
+(215–245 ms contra 68–88 ms) e não foi o mais rápido na volta; a fila antes
+do committer cai para 1,7–2,2 ms, e a latência total do commit sobe, portanto
+não ler a fila isolada. `256 docs` venceu o default nas duas metades, sem
+mecanismo consistente na volta. **Decisão:** nenhum override nem default
+entra na imagem publicada; `256 docs` é o próximo candidato de tuning para
+repetição e para o aplicativo real; "um escritor" fica experimental, não é
+recomendação geral. Nenhuma porcentagem causal de throughput a divulgar.
+
+**Limitação operacional (verificada):** são variáveis do processo do backend,
+e o Synapse hoje não as persiste por deployment: o loader de ambiente do
+create/recreate produz apenas CORS e variáveis de sistema
+(`synapse/internal/provisioner/claim.go:306-326`), e `synapse env set` alimenta
+o runtime JavaScript. Uma variável inserida à mão no container se perde no
+recreate. Este tuning é de laboratório e manual; nenhuma mudança na frota.
+Brutos em `namespace2/batch-local/measurements`, arquivo com SHA-256
+`3652414fa82f4dd08a0c0056397030b9851c66dd30203cddbc994f09b063c036`.
+
 ## O que ainda não existe
 
-Os perfis de batching do SQLite (`docs 256 / 256 KiB` e
-`MAX_CONCURRENT_WRITE_BATCHES=1`, medidos em VM separada, G0 dela repetido e
-aprovado); a recomendação final de knobs depende deles e não muda a imagem.
-Publicação de qualquer imagem, validação com o aplicativo real e o filtro por
-tabela/índice no bootstrap de busca.
+Deploy em qualquer deployment, validação com o aplicativo real, o filtro por
+tabela/índice no bootstrap de busca, e a repetição do tuning `256 docs` com
+o app real. Um mecanismo de persistir knobs do processo por deployment no
+Synapse (P15 da auditoria) é pré-requisito para qualquer recomendação de
+tuning virar operação.
