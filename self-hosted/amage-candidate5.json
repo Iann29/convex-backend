@@ -8,8 +8,23 @@
   "patchSha256": "795b36a9298e0cc246a4fa22b75148b20f0a028d84184bb50eea3cf499bae511",
   "version": "amage-20260908-candidate.5-b-p12+base.849a6fc605b5.patch.795b36a9298e",
   "variant": "5-b-p12",
-  "published": false,
+  "published": true,
   "platform": "linux/amd64",
   "defaultSiteConcurrency": 16,
-  "c4Reference": "54b5cc413a2f469c725231b82d3832082651d4d1"
+  "c4Reference": "54b5cc413a2f469c725231b82d3832082651d4d1",
+  "image": "ghcr.io/amageweb/convex-backend:amage-20260908-candidate.5-b-p12-795b36a9298e",
+  "publishedAt": "2026-09-08T15:10:24.881291+00:00",
+  "digestReference": "ghcr.io/amageweb/convex-backend@sha256:fd744b3dbe917df467be827157192171e7a869da4bb87be346a35bf559df92eb",
+  "expectedIndexDigest": "sha256:fd744b3dbe917df467be827157192171e7a869da4bb87be346a35bf559df92eb",
+  "amd64ManifestDigest": "sha256:783b7d209c85cd7f65eaedf5310bd2db96cf54ff95dea5e4cfe4c288d4894040",
+  "configDigest": "sha256:e5427d62ab2072b45f5f533211d84aa23ccd08f965fc97e66d8ae7d956d9ad70",
+  "sourceRuntimeCommit": "367ad388f0528a50949a9b837119548a0b7f8baf",
+  "sourceTreeCommit": "b4cf84d75e6bf0fc26aeacc51b1317ac6c58bdf9",
+  "buildArgs": {
+    "CARGO_BUILD_JOBS": "6",
+    "VERGEN_GIT_SHA": "849a6fc605b5a910c9834b61a77c5475cc24d189",
+    "VERGEN_GIT_COMMIT_TIMESTAMP": "2026-09-05T23:58:23Z",
+    "AMAGE_PATCH_SHA256": "795b36a9298e0cc246a4fa22b75148b20f0a028d84184bb50eea3cf499bae511",
+    "CONVEX_RELEASE_VERSION": "amage-20260908-candidate.5-b-p12+base.849a6fc605b5.patch.795b36a9298e"
+  }
 }
