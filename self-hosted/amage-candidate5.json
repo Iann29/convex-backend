@@ -1,0 +1,15 @@
+{
+  "base": "849a6fc605b5a910c9834b61a77c5475cc24d189",
+  "patchPaths": [
+    "crates",
+    "self-hosted/docker-build/Dockerfile.backend",
+    "Cargo.lock"
+  ],
+  "patchSha256": "795b36a9298e0cc246a4fa22b75148b20f0a028d84184bb50eea3cf499bae511",
+  "version": "amage-20260908-candidate.5-b-p12+base.849a6fc605b5.patch.795b36a9298e",
+  "variant": "5-b-p12",
+  "published": false,
+  "platform": "linux/amd64",
+  "defaultSiteConcurrency": 16,
+  "c4Reference": "54b5cc413a2f469c725231b82d3832082651d4d1"
+}
