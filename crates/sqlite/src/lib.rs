@@ -48,7 +48,10 @@ use common::{
         TimestampRange,
     },
     query::Order,
-    runtime::CoopStreamExt as _,
+    runtime::{
+        block_in_place,
+        CoopStreamExt as _,
+    },
     types::{
         IndexId,
         PersistenceVersion,
@@ -62,6 +65,11 @@ use common::{
 };
 use futures::StreamExt;
 use futures_async_stream::try_stream;
+use metrics::{
+    register_convex_histogram,
+    StaticMetricLabel,
+    Timer,
+};
 use parking_lot::Mutex;
 use rusqlite::{
     params,
@@ -72,19 +80,94 @@ use rusqlite::{
 };
 use serde::Deserialize as _;
 use serde_json::Value as JsonValue;
+use tokio::{
+    runtime::{
+        Handle,
+        RuntimeFlavor,
+    },
+    sync::Semaphore,
+};
 
-// We only have a single Sqlite connection which does not allow async calls, so
-// we can't really make queries concurrent.
+// ponytail: one connection serializes persistence; evaluate WAL readers when
+// measured connection waits justify parallel reads.
+#[derive(Clone)]
 pub struct SqlitePersistence {
     inner: Arc<Mutex<Inner>>,
+    access: Arc<Semaphore>,
+    newly_created: bool,
 }
 
 struct Inner {
-    newly_created: bool,
     connection: Connection,
 }
 
+register_convex_histogram!(
+    SQLITE_LOCK_WAIT_SECONDS,
+    "Time waiting for the SQLite connection lock",
+    &["op"]
+);
+register_convex_histogram!(
+    SQLITE_LOCK_HOLD_SECONDS,
+    "Time holding the SQLite connection lock",
+    &["op"]
+);
+register_convex_histogram!(
+    SQLITE_PERMIT_WAIT_SECONDS,
+    "Time waiting for admission to the SQLite connection",
+    &["op", "flavor"]
+);
+
 impl SqlitePersistence {
+    async fn run<R: Send>(
+        &self,
+        operation: &'static str,
+        f: impl FnOnce() -> anyhow::Result<R> + Send,
+    ) -> anyhow::Result<R> {
+        let runtime = Handle::try_current();
+        let flavor = match runtime.as_ref().map(Handle::runtime_flavor) {
+            Ok(RuntimeFlavor::MultiThread) => "multi",
+            Ok(RuntimeFlavor::CurrentThread) => "current",
+            _ => "other",
+        };
+        let mut wait_timer = Timer::new_with_labels(&SQLITE_PERMIT_WAIT_SECONDS);
+        wait_timer.add_label(StaticMetricLabel::new("op", operation));
+        wait_timer.add_label(StaticMetricLabel::new("flavor", flavor));
+        let _permit = self
+            .access
+            .acquire()
+            .await
+            .context("SQLite admission closed")?;
+        drop(wait_timer);
+
+        // One page or a whole write/revision batch is synchronous. Waiting for
+        // its turn is async; only the admitted operation hands off a Tokio
+        // worker. Any transaction opened inside f is committed or dropped
+        // before this poll returns, preserving the synchronous operation's
+        // cancellation boundary and borrowed data.
+        if runtime.is_ok() {
+            block_in_place(f)
+        } else {
+            // Preserve callers that drive persistence without a Tokio runtime.
+            f()
+        }
+    }
+
+    fn with_connection<R>(
+        &self,
+        operation: &'static str,
+        f: impl FnOnce(&mut Connection) -> anyhow::Result<R>,
+    ) -> anyhow::Result<R> {
+        let mut wait_timer = Timer::new_with_labels(&SQLITE_LOCK_WAIT_SECONDS);
+        wait_timer.add_label(StaticMetricLabel::new("op", operation));
+        let mut inner = self.inner.lock();
+        drop(wait_timer);
+        let mut hold_timer = Timer::new_with_labels(&SQLITE_LOCK_HOLD_SECONDS);
+        hold_timer.add_label(StaticMetricLabel::new("op", operation));
+        let result = f(&mut inner.connection);
+        drop(inner);
+        result
+    }
+
     pub fn new(path: &str) -> anyhow::Result<Self> {
         let newly_created = !Path::new(path).exists();
         let connection = Connection::open(path)?;
@@ -93,10 +176,9 @@ impl SqlitePersistence {
         connection.execute_batch(INDEXES_INIT)?;
         connection.execute_batch(PERSISTENCE_GLOBALS_INIT)?;
         Ok(Self {
-            inner: Arc::new(Mutex::new(Inner {
-                newly_created,
-                connection,
-            })),
+            inner: Arc::new(Mutex::new(Inner { connection })),
+            access: Arc::new(Semaphore::new(1)),
+            newly_created,
         })
     }
 
@@ -155,19 +237,20 @@ LIMIT {page_size}
             min = range.min_timestamp_inclusive(),
             max = range.max_timestamp_exclusive(),
         );
-        let connection = &self.inner.lock().connection;
-        let mut stmt = connection.prepare(&query)?;
-        let mut page = vec![];
-        for row in stmt.query_map(&params[..], load_document_row)? {
-            let (document_id, ts, document, prev_ts) = row_to_document(row)?;
-            page.push(DocumentLogEntry {
-                ts,
-                id: document_id,
-                value: document,
-                prev_ts,
-            });
-        }
-        Ok(page)
+        self.with_connection("load_documents", |connection| {
+            let mut stmt = connection.prepare(&query)?;
+            let mut page = vec![];
+            for row in stmt.query_map(&params[..], load_document_row)? {
+                let (document_id, ts, document, prev_ts) = row_to_document(row)?;
+                page.push(DocumentLogEntry {
+                    ts,
+                    id: document_id,
+                    value: document,
+                    prev_ts,
+                });
+            }
+            Ok(page)
+        })
     }
 
     /// Stream the documents log one page at a time. As in the Postgres
@@ -190,8 +273,11 @@ LIMIT {page_size}
         let page_size = page_size.max(1) as usize;
         let mut cursor: Option<(u64, Vec<u8>, Vec<u8>)> = None;
         loop {
-            let page =
-                self._load_documents_page(tablet_id, range, order, page_size, cursor.as_ref())?;
+            let page = self
+                .run("load_documents", || {
+                    self._load_documents_page(tablet_id, range, order, page_size, cursor.as_ref())
+                })
+                .await?;
             let page_len = page.len();
             retention_validator
                 .validate_document_snapshot(range.min_timestamp_inclusive())
@@ -278,52 +364,55 @@ LIMIT {batch_size}
 "#,
         );
 
-        let connection = &self.inner.lock().connection;
-        let mut stmt = connection.prepare(&query)?;
-        let row_iter = stmt.query_map(&params[..], |row| {
-            let key = IndexKeyBytes(row.get::<_, Vec<u8>>(0)?);
-            let ts = Timestamp::try_from(row.get::<_, u64>(1)?).expect("timestamp out of bounds");
-            let document_id: Option<Vec<u8>> = row.get(2)?;
-            let table: Option<Vec<u8>> = row.get(3)?;
-            let json_value: Option<String> = row.get(4)?;
-            let prev_ts: Option<Timestamp> = row
-                .get::<_, Option<u64>>(5)?
-                .map(|ts| Timestamp::try_from(ts).expect("prev_ts out of bounds"));
-            let deleted = row.get::<_, u32>(6)? != 0;
+        self.with_connection("index_scan", |connection| {
+            let mut stmt = connection.prepare(&query)?;
+            let row_iter = stmt.query_map(&params[..], |row| {
+                let key = IndexKeyBytes(row.get::<_, Vec<u8>>(0)?);
+                let ts =
+                    Timestamp::try_from(row.get::<_, u64>(1)?).expect("timestamp out of bounds");
+                let document_id: Option<Vec<u8>> = row.get(2)?;
+                let table: Option<Vec<u8>> = row.get(3)?;
+                let json_value: Option<String> = row.get(4)?;
+                let prev_ts: Option<Timestamp> = row
+                    .get::<_, Option<u64>>(5)?
+                    .map(|ts| Timestamp::try_from(ts).expect("prev_ts out of bounds"));
+                let deleted = row.get::<_, u32>(6)? != 0;
 
-            Ok((key, ts, document_id, table, json_value, prev_ts, deleted))
-        })?;
-        let mut page = vec![];
-        for row in row_iter {
-            let (key, ts, document_id, table, json_value, prev_ts, deleted) = row?;
-            if deleted {
-                page.push((key, None));
-                continue;
+                Ok((key, ts, document_id, table, json_value, prev_ts, deleted))
+            })?;
+            let mut page = vec![];
+            for row in row_iter {
+                let (key, ts, document_id, table, json_value, prev_ts, deleted) = row?;
+                if deleted {
+                    page.push((key, None));
+                    continue;
+                }
+                let table = table.ok_or_else(|| {
+                    anyhow::anyhow!("Dangling index reference for {:?} {:?}", key, ts)
+                })?;
+                let table = TabletId(table.try_into()?);
+                let document_id = document_id.ok_or_else(|| {
+                    anyhow::anyhow!("Dangling index reference for {:?} {:?}", key, ts)
+                })?;
+                let _document_id =
+                    InternalDocumentId::new(table, InternalId::try_from(document_id)?);
+                let json_value = json_value.ok_or_else(|| {
+                    anyhow::anyhow!("Index reference to deleted document {:?} {:?}", key, ts)
+                })?;
+                let json_value: serde_json::Value = serde_json::from_str(&json_value)?;
+                let value: ConvexValue = json_value.try_into()?;
+                let document = ResolvedDocument::from_database(tablet_id, value)?;
+                page.push((
+                    key,
+                    Some(LatestDocument {
+                        ts,
+                        value: document,
+                        prev_ts,
+                    }),
+                ));
             }
-            let table = table.ok_or_else(|| {
-                anyhow::anyhow!("Dangling index reference for {:?} {:?}", key, ts)
-            })?;
-            let table = TabletId(table.try_into()?);
-            let document_id = document_id.ok_or_else(|| {
-                anyhow::anyhow!("Dangling index reference for {:?} {:?}", key, ts)
-            })?;
-            let _document_id = InternalDocumentId::new(table, InternalId::try_from(document_id)?);
-            let json_value = json_value.ok_or_else(|| {
-                anyhow::anyhow!("Index reference to deleted document {:?} {:?}", key, ts)
-            })?;
-            let json_value: serde_json::Value = serde_json::from_str(&json_value)?;
-            let value: ConvexValue = json_value.try_into()?;
-            let document = ResolvedDocument::from_database(tablet_id, value)?;
-            page.push((
-                key,
-                Some(LatestDocument {
-                    ts,
-                    value: document,
-                    prev_ts,
-                }),
-            ));
-        }
-        Ok(page)
+            Ok(page)
+        })
     }
 
     /// Stream an index scan one page at a time. The snapshot is validated
@@ -344,15 +433,19 @@ LIMIT {batch_size}
     ) {
         let mut cursor: Option<IndexKeyBytes> = None;
         loop {
-            let page = self._index_scan_page(
-                index_id,
-                tablet_id,
-                read_timestamp,
-                &interval,
-                order,
-                batch_size,
-                cursor.as_ref(),
-            )?;
+            let page = self
+                .run("index_scan", || {
+                    self._index_scan_page(
+                        index_id,
+                        tablet_id,
+                        read_timestamp,
+                        &interval,
+                        order,
+                        batch_size,
+                        cursor.as_ref(),
+                    )
+                })
+                .await?;
             let page_len = page.len();
             retention_validator
                 .validate_snapshot(read_timestamp)
@@ -373,65 +466,70 @@ LIMIT {batch_size}
         &self,
         key: PersistenceGlobalKey,
     ) -> anyhow::Result<Option<JsonValue>> {
-        let connection = &self.inner.lock().connection;
-        let mut stmt = connection.prepare(GET_PERSISTENCE_GLOBAL)?;
-        let key = String::from(key);
-        let params: Vec<&dyn ToSql> = vec![&key];
-        let mut row_iter = stmt.query_map(&params[..], |row| {
-            let json_value_str: String = row.get(0)?;
-            Ok(json_value_str)
-        })?;
-        row_iter
-            .next()
-            .map(|json_value_str| {
-                let json_value_str = json_value_str?;
-                let mut json_deserializer = serde_json::Deserializer::from_str(&json_value_str);
-                // XXX: this is bad, but shapes can get much more nested than convex values
-                json_deserializer.disable_recursion_limit();
-                let json_value = JsonValue::deserialize(&mut json_deserializer)
-                    .with_context(|| format!("Invalid JSON at persistence key {key:?}"))?;
-                json_deserializer.end()?;
-                Ok(json_value)
-            })
-            .transpose()
+        self.with_connection("globals", |connection| {
+            let mut stmt = connection.prepare(GET_PERSISTENCE_GLOBAL)?;
+            let key = String::from(key);
+            let params: Vec<&dyn ToSql> = vec![&key];
+            let mut row_iter = stmt.query_map(&params[..], |row| {
+                let json_value_str: String = row.get(0)?;
+                Ok(json_value_str)
+            })?;
+            row_iter
+                .next()
+                .map(|json_value_str| {
+                    let json_value_str = json_value_str?;
+                    let mut json_deserializer = serde_json::Deserializer::from_str(&json_value_str);
+                    // XXX: this is bad, but shapes can get much more nested than convex values
+                    json_deserializer.disable_recursion_limit();
+                    let json_value = JsonValue::deserialize(&mut json_deserializer)
+                        .with_context(|| format!("Invalid JSON at persistence key {key:?}"))?;
+                    json_deserializer.end()?;
+                    Ok(json_value)
+                })
+                .transpose()
+        })
     }
 }
 
 #[async_trait]
 impl IndexRowPersistence for SqlitePersistence {
     async fn delete_index_rows(&self, expired_rows: Vec<IndexEntry>) -> anyhow::Result<usize> {
-        let mut inner = self.inner.lock();
-        let tx = inner.connection.transaction()?;
-        let mut delete_index_query = tx.prepare_cached(DELETE_INDEX)?;
-        let mut count_deleted = 0;
+        self.run("delete", || {
+            self.with_connection("delete", |connection| {
+                let tx = connection.transaction()?;
+                let mut delete_index_query = tx.prepare_cached(DELETE_INDEX)?;
+                let mut count_deleted = 0;
 
-        for IndexEntry {
-            index_id,
-            key_prefix,
-            ts,
-            ..
-        } in expired_rows
-        {
-            count_deleted +=
-                delete_index_query
-                    .execute(params![&index_id.0[..], &u64::from(ts), key_prefix,])?;
-        }
-        drop(delete_index_query);
-        tx.commit()?;
-        Ok(count_deleted)
+                for IndexEntry {
+                    index_id,
+                    key_prefix,
+                    ts,
+                    ..
+                } in expired_rows
+                {
+                    count_deleted += delete_index_query.execute(params![
+                        &index_id.0[..],
+                        &u64::from(ts),
+                        key_prefix,
+                    ])?;
+                }
+                drop(delete_index_query);
+                tx.commit()?;
+                Ok(count_deleted)
+            })
+        })
+        .await
     }
 }
 
 #[async_trait]
 impl Persistence for SqlitePersistence {
     fn is_fresh(&self) -> bool {
-        self.inner.lock().newly_created
+        self.newly_created
     }
 
     fn reader(&self) -> Arc<dyn PersistenceReader> {
-        Arc::new(Self {
-            inner: self.inner.clone(),
-        })
+        Arc::new(self.clone())
     }
 
     async fn write<'a>(
@@ -440,67 +538,71 @@ impl Persistence for SqlitePersistence {
         indexes: &'a [PersistenceIndexEntry],
         conflict_strategy: ConflictStrategy,
     ) -> anyhow::Result<()> {
-        let mut inner = self.inner.lock();
-        let tx = inner.connection.transaction()?;
-        let mut insert_document_query = match conflict_strategy {
-            ConflictStrategy::Error => tx.prepare_cached(INSERT_DOCUMENT)?,
-            ConflictStrategy::Overwrite => tx.prepare_cached(INSERT_OVERWRITE_DOCUMENT)?,
-        };
+        self.run("write", || {
+            self.with_connection("write", |connection| {
+                let tx = connection.transaction()?;
+                let mut insert_document_query = match conflict_strategy {
+                    ConflictStrategy::Error => tx.prepare_cached(INSERT_DOCUMENT)?,
+                    ConflictStrategy::Overwrite => tx.prepare_cached(INSERT_OVERWRITE_DOCUMENT)?,
+                };
 
-        for update in documents {
-            let (json_value, deleted) = if let Some(document) = &update.value {
-                assert_eq!(update.id, document.id_with_table_id());
-                let json_value = document.value().json_serialize()?;
-                (Some(json_value), 0)
-            } else {
-                (None, 1)
-            };
-            insert_document_query.execute(params![
-                &update.id.internal_id()[..],
-                &u64::from(update.ts),
-                &update.id.table().0[..],
-                &json_value,
-                &deleted,
-                &update.prev_ts.map(u64::from),
-            ])?;
-        }
-        drop(insert_document_query);
-
-        let mut insert_index_query = if conflict_strategy == ConflictStrategy::Overwrite {
-            tx.prepare_cached(INSERT_OVERWRITE_INDEX)?
-        } else {
-            tx.prepare_cached(INSERT_INDEX)?
-        };
-        for update in indexes {
-            let index_id = update.index_id;
-            let key: &[u8] = &update.key.0;
-            match update.value {
-                None => {
-                    insert_index_query.execute(params![
-                        &index_id.0[..],
+                for update in documents {
+                    let (json_value, deleted) = if let Some(document) = &update.value {
+                        assert_eq!(update.id, document.id_with_table_id());
+                        let json_value = document.value().json_serialize()?;
+                        (Some(json_value), 0)
+                    } else {
+                        (None, 1)
+                    };
+                    insert_document_query.execute(params![
+                        &update.id.internal_id()[..],
                         &u64::from(update.ts),
-                        key,
-                        &1,
-                        &Null,
-                        &Null,
+                        &update.id.table().0[..],
+                        &json_value,
+                        &deleted,
+                        &update.prev_ts.map(u64::from),
                     ])?;
-                },
-                Some(doc_id) => {
-                    insert_index_query.execute(params![
-                        &index_id.0[..],
-                        &u64::from(update.ts),
-                        key,
-                        &0,
-                        &doc_id.table().0[..],
-                        &doc_id.internal_id()[..],
-                    ])?;
-                },
-            };
-        }
-        drop(insert_index_query);
+                }
+                drop(insert_document_query);
 
-        tx.commit()?;
-        Ok(())
+                let mut insert_index_query = if conflict_strategy == ConflictStrategy::Overwrite {
+                    tx.prepare_cached(INSERT_OVERWRITE_INDEX)?
+                } else {
+                    tx.prepare_cached(INSERT_INDEX)?
+                };
+                for update in indexes {
+                    let index_id = update.index_id;
+                    let key: &[u8] = &update.key.0;
+                    match update.value {
+                        None => {
+                            insert_index_query.execute(params![
+                                &index_id.0[..],
+                                &u64::from(update.ts),
+                                key,
+                                &1,
+                                &Null,
+                                &Null,
+                            ])?;
+                        },
+                        Some(doc_id) => {
+                            insert_index_query.execute(params![
+                                &index_id.0[..],
+                                &u64::from(update.ts),
+                                key,
+                                &0,
+                                &doc_id.table().0[..],
+                                &doc_id.internal_id()[..],
+                            ])?;
+                        },
+                    };
+                }
+                drop(insert_index_query);
+
+                tx.commit()?;
+                Ok(())
+            })
+        })
+        .await
     }
 
     async fn write_persistence_global(
@@ -508,19 +610,27 @@ impl Persistence for SqlitePersistence {
         key: PersistenceGlobalKey,
         value: JsonValue,
     ) -> anyhow::Result<()> {
-        let mut inner = self.inner.lock();
-        let tx = inner.connection.transaction()?;
-        let mut write_query = tx.prepare_cached(WRITE_PERSISTENCE_GLOBAL)?;
-        let json_value = serde_json::to_string(&value)?;
-        write_query.execute(params![&String::from(key), &json_value])?;
-        drop(write_query);
-        tx.commit()?;
-        Ok(())
+        self.run("globals", || {
+            self.with_connection("globals", |connection| {
+                let tx = connection.transaction()?;
+                let mut write_query = tx.prepare_cached(WRITE_PERSISTENCE_GLOBAL)?;
+                let json_value = serde_json::to_string(&value)?;
+                write_query.execute(params![&String::from(key), &json_value])?;
+                drop(write_query);
+                tx.commit()?;
+                Ok(())
+            })
+        })
+        .await
     }
 
     async fn has_index_entries(&self) -> anyhow::Result<bool> {
-        let connection = &self.inner.lock().connection;
-        Ok(connection.prepare(HAS_INDEX_ENTRIES)?.exists([])?)
+        self.run("has_index_entries", || {
+            self.with_connection("has_index_entries", |connection| {
+                Ok(connection.prepare(HAS_INDEX_ENTRIES)?.exists([])?)
+            })
+        })
+        .await
     }
 
     async fn reclaim_index_history(
@@ -534,23 +644,27 @@ impl Persistence for SqlitePersistence {
         &self,
         documents: Vec<(Timestamp, InternalDocumentId)>,
     ) -> anyhow::Result<usize> {
-        let mut inner = self.inner.lock();
-        let tx = inner.connection.transaction()?;
-        let mut delete_document_query = tx.prepare_cached(DELETE_DOCUMENT)?;
-        let mut count_deleted = 0;
+        self.run("delete", || {
+            self.with_connection("delete", |connection| {
+                let tx = connection.transaction()?;
+                let mut delete_document_query = tx.prepare_cached(DELETE_DOCUMENT)?;
+                let mut count_deleted = 0;
 
-        for (ts, internal_id) in documents {
-            let tablet_id: TabletId = internal_id.table();
-            let id = internal_id.internal_id();
-            count_deleted += delete_document_query.execute(params![
-                &tablet_id.0[..],
-                &id[..],
-                &u64::from(ts),
-            ])?;
-        }
-        drop(delete_document_query);
-        tx.commit()?;
-        Ok(count_deleted)
+                for (ts, internal_id) in documents {
+                    let tablet_id: TabletId = internal_id.table();
+                    let id = internal_id.internal_id();
+                    count_deleted += delete_document_query.execute(params![
+                        &tablet_id.0[..],
+                        &id[..],
+                        &u64::from(ts),
+                    ])?;
+                }
+                drop(delete_document_query);
+                tx.commit()?;
+                Ok(count_deleted)
+            })
+        })
+        .await
     }
 
     async fn delete_tablet_documents(
@@ -558,17 +672,21 @@ impl Persistence for SqlitePersistence {
         tablet_id: TabletId,
         chunk_size: usize,
     ) -> anyhow::Result<usize> {
-        let mut inner = self.inner.lock();
-        let tx = inner.connection.transaction()?;
-        let mut delete_table_documents_query = tx.prepare_cached(DELETE_TABLE_DOCUMENTS)?;
-        let count_deleted = delete_table_documents_query.execute(params![
-            &tablet_id.0[..],
-            &tablet_id.0[..],
-            chunk_size,
-        ])?;
-        drop(delete_table_documents_query);
-        tx.commit()?;
-        Ok(count_deleted)
+        self.run("delete", || {
+            self.with_connection("delete", |connection| {
+                let tx = connection.transaction()?;
+                let mut delete_table_documents_query = tx.prepare_cached(DELETE_TABLE_DOCUMENTS)?;
+                let count_deleted = delete_table_documents_query.execute(params![
+                    &tablet_id.0[..],
+                    &tablet_id.0[..],
+                    chunk_size,
+                ])?;
+                drop(delete_table_documents_query);
+                tx.commit()?;
+                Ok(count_deleted)
+            })
+        })
+        .await
     }
 }
 
@@ -612,28 +730,31 @@ impl PersistenceReader for SqlitePersistence {
     ) -> anyhow::Result<BTreeMap<(InternalDocumentId, Timestamp), DocumentLogEntry>> {
         let mut out = BTreeMap::new();
         let mut min_ts = Timestamp::MAX;
-        {
-            let inner = self.inner.lock();
-            for (id, ts) in ids {
-                min_ts = cmp::min(ts, min_ts);
-                let mut stmt = inner.connection.prepare(PREV_REV_QUERY)?;
-                let internal_id = id.internal_id();
-                let params = params![&id.table().0[..], &internal_id[..], &u64::from(ts)];
-                let mut row_iter = stmt.query_map(params, load_document_row)?;
-                if let Some(row) = row_iter.next() {
-                    let (document_id, prev_ts, document, prev_prev_ts) = row_to_document(row)?;
-                    out.insert(
-                        (document_id, ts),
-                        DocumentLogEntry {
-                            ts: prev_ts,
-                            id: document_id,
-                            value: document,
-                            prev_ts: prev_prev_ts,
-                        },
-                    );
+        self.run("previous_revisions", || {
+            self.with_connection("previous_revisions", |connection| {
+                let mut stmt = connection.prepare(PREV_REV_QUERY)?;
+                for (id, ts) in ids {
+                    min_ts = cmp::min(ts, min_ts);
+                    let internal_id = id.internal_id();
+                    let params = params![&id.table().0[..], &internal_id[..], &u64::from(ts)];
+                    let mut row_iter = stmt.query_map(params, load_document_row)?;
+                    if let Some(row) = row_iter.next() {
+                        let (document_id, prev_ts, document, prev_prev_ts) = row_to_document(row)?;
+                        out.insert(
+                            (document_id, ts),
+                            DocumentLogEntry {
+                                ts: prev_ts,
+                                id: document_id,
+                                value: document,
+                                prev_ts: prev_prev_ts,
+                            },
+                        );
+                    }
                 }
-            }
-        }
+                Ok(())
+            })
+        })
+        .await?;
         retention_validator
             .validate_document_snapshot(min_ts)
             .await?;
@@ -649,31 +770,34 @@ impl PersistenceReader for SqlitePersistence {
         let min_ts = ids.iter().map(|DocumentPrevTsQuery { ts, .. }| *ts).min();
 
         let mut out = BTreeMap::new();
-        {
-            let inner = self.inner.lock();
-            for DocumentPrevTsQuery { id, ts, prev_ts } in ids {
-                let mut stmt = inner.connection.prepare(EXACT_REV_QUERY)?;
-                let internal_id = id.internal_id();
-                let params = params![&id.table().0[..], &internal_id[..], &u64::from(prev_ts)];
-                let mut row_iter = stmt.query_map(params, load_document_row)?;
-                if let Some(row) = row_iter.next() {
-                    let (document_id, prev_ts, document, prev_prev_ts) = row_to_document(row)?;
-                    out.insert(
-                        DocumentPrevTsQuery {
-                            id: document_id,
-                            ts,
-                            prev_ts,
-                        },
-                        DocumentLogEntry {
-                            ts: prev_ts,
-                            id: document_id,
-                            value: document,
-                            prev_ts: prev_prev_ts,
-                        },
-                    );
+        self.run("previous_revisions", || {
+            self.with_connection("previous_revisions", |connection| {
+                let mut stmt = connection.prepare(EXACT_REV_QUERY)?;
+                for DocumentPrevTsQuery { id, ts, prev_ts } in ids {
+                    let internal_id = id.internal_id();
+                    let params = params![&id.table().0[..], &internal_id[..], &u64::from(prev_ts)];
+                    let mut row_iter = stmt.query_map(params, load_document_row)?;
+                    if let Some(row) = row_iter.next() {
+                        let (document_id, prev_ts, document, prev_prev_ts) = row_to_document(row)?;
+                        out.insert(
+                            DocumentPrevTsQuery {
+                                id: document_id,
+                                ts,
+                                prev_ts,
+                            },
+                            DocumentLogEntry {
+                                ts: prev_ts,
+                                id: document_id,
+                                value: document,
+                                prev_ts: prev_prev_ts,
+                            },
+                        );
+                    }
                 }
-            }
-        }
+                Ok(())
+            })
+        })
+        .await?;
         if let Some(min_ts) = min_ts {
             retention_validator
                 .validate_document_snapshot(min_ts)
@@ -712,7 +836,8 @@ impl PersistenceReader for SqlitePersistence {
         &self,
         key: PersistenceGlobalKey,
     ) -> anyhow::Result<Option<JsonValue>> {
-        self._get_persistence_global(key)
+        self.run("globals", || self._get_persistence_global(key))
+            .await
     }
 
     fn version(&self) -> PersistenceVersion {
@@ -842,7 +967,17 @@ ORDER BY ts ASC, table_id ASC, id ASC
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{
+        sync::{
+            atomic::{
+                AtomicUsize,
+                Ordering,
+            },
+            mpsc,
+            Arc,
+        },
+        time::Duration,
+    };
 
     use common::{
         document::{
@@ -884,6 +1019,132 @@ mod tests {
     use futures::TryStreamExt;
 
     use super::SqlitePersistence;
+
+    #[test]
+    fn blocking_sql_releases_the_only_runtime_worker() -> anyhow::Result<()> {
+        fn heartbeat_progresses(offload: bool) -> anyhow::Result<bool> {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .enable_all()
+                .build()?;
+            let persistence = SqlitePersistence::new(":memory:")?;
+            let (entered_tx, entered_rx) = mpsc::channel();
+            let (release_tx, release_rx) = mpsc::channel();
+            let blocker = runtime.spawn(async move {
+                let connection_owner = persistence.clone();
+                let operation = move || {
+                    connection_owner.with_connection("globals", |connection| {
+                        connection.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))?;
+                        entered_tx.send(())?;
+                        release_rx.recv_timeout(Duration::from_secs(10))?;
+                        Ok(())
+                    })
+                };
+                if offload {
+                    persistence.run("globals", operation).await
+                } else {
+                    // Negative control: the same SQL holds the only worker,
+                    // as synchronous persistence did before the handoff.
+                    operation()
+                }
+            });
+            entered_rx.recv_timeout(Duration::from_secs(5))?;
+            let (heartbeat_tx, heartbeat_rx) = mpsc::channel();
+            let heartbeat = runtime.spawn(async move { heartbeat_tx.send(()) });
+            let progressed = heartbeat_rx.recv_timeout(Duration::from_secs(2)).is_ok();
+            // Always release the SQL task before checking the result.
+            release_tx.send(())?;
+            runtime.block_on(blocker)??;
+            runtime.block_on(heartbeat)??;
+            Ok(progressed)
+        }
+        assert!(!heartbeat_progresses(false)?, "inline control must block");
+        assert!(heartbeat_progresses(true)?, "admitted SQL must hand off");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cancellation_while_waiting_executes_no_sql() -> anyhow::Result<()> {
+        let persistence = SqlitePersistence::new(":memory:")?;
+        let permit = persistence.access.acquire().await?;
+        let statements = Arc::new(AtomicUsize::new(0));
+        let count = statements.clone();
+        let pending = persistence.clone();
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            entered_tx.send(()).unwrap();
+            pending
+                .run("globals", || {
+                    pending.with_connection("globals", |connection| {
+                        count.fetch_add(1, Ordering::SeqCst);
+                        connection.execute_batch("CREATE TABLE canceled_probe (id INTEGER)")?;
+                        Ok(())
+                    })
+                })
+                .await
+        });
+        entered_rx.await?;
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        drop(permit);
+        persistence
+            .run("globals", || {
+                persistence.with_connection("globals", |connection| {
+                    let tables: i64 = connection.query_row(
+                        "SELECT count(*) FROM sqlite_master WHERE name = 'canceled_probe'",
+                        [],
+                        |row| row.get(0),
+                    )?;
+                    assert_eq!(tables, 0);
+                    Ok(())
+                })
+            })
+            .await?;
+        assert_eq!(statements.load(Ordering::SeqCst), 0);
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn failed_transaction_rolls_back_before_reuse_and_reopen() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("rollback.sqlite");
+        let path = path.to_str().unwrap();
+        let persistence = SqlitePersistence::new(path)?;
+        let result: anyhow::Result<()> = persistence
+            .run("write", || {
+                persistence.with_connection("write", |connection| {
+                    connection.execute_batch("CREATE TABLE rollback_probe (id INTEGER)")?;
+                    let tx = connection.transaction()?;
+                    tx.execute("INSERT INTO rollback_probe VALUES (1)", [])?;
+                    anyhow::bail!("injected error before commit")
+                })
+            })
+            .await;
+        assert!(result.is_err());
+        persistence
+            .run("globals", || {
+                persistence.with_connection("globals", |connection| {
+                    assert!(connection.is_autocommit());
+                    Ok(())
+                })
+            })
+            .await?;
+        drop(persistence);
+        let reopened = SqlitePersistence::new(path)?;
+        reopened
+            .run("globals", || {
+                reopened.with_connection("globals", |connection| {
+                    let rows: i64 =
+                        connection.query_row("SELECT count(*) FROM rollback_probe", [], |row| {
+                            row.get(0)
+                        })?;
+                    assert_eq!(rows, 0);
+                    Ok(())
+                })
+            })
+            .await?;
+        Ok(())
+    }
 
     /// One indexed key and its history: `(ts, Some(v))` is a live write of
     /// value `v`, `(ts, None)` is a tombstone.
@@ -1406,6 +1667,80 @@ mod tests {
         let out_of_range =
             TimestampRange::new(Timestamp::try_from(100u64)?..Timestamp::try_from(200u64)?);
         assert!(run_load(&persistence, out_of_range, Order::Asc, 2)
+            .await?
+            .is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn revision_batches_rebind_ids_timestamps_and_tombstones() -> anyhow::Result<()> {
+        use std::collections::{
+            BTreeMap,
+            BTreeSet,
+        };
+
+        use common::persistence::DocumentPrevTsQuery;
+
+        let mut specs = vec![];
+        for tablet_n in [1, 2] {
+            for doc_n in 1..=4 {
+                for ts in [10, 20, 30] {
+                    specs.push(LogEntrySpec {
+                        ts,
+                        tablet_n,
+                        doc_n,
+                        value: (ts != 20).then_some(i64::from(doc_n)),
+                    });
+                }
+            }
+        }
+        let (persistence, _dir) = make_log_fixture(&specs).await?;
+        let mut previous = BTreeSet::new();
+        let mut exact = BTreeSet::new();
+        let mut expected_previous = BTreeMap::new();
+        let mut expected_exact = BTreeMap::new();
+        for spec in &specs {
+            let entry = log_entry(spec)?;
+            let id = entry.id;
+            let query_ts = Timestamp::try_from(spec.ts + 1)?;
+            let key = (entry.id, query_ts);
+            previous.insert(key);
+            expected_previous.insert(key, entry.clone());
+            let key = DocumentPrevTsQuery {
+                id: entry.id,
+                ts: query_ts,
+                prev_ts: entry.ts,
+            };
+            exact.insert(key.clone());
+            expected_exact.insert(key, entry);
+            // Misses interleaved with hits must not reuse a preceding row.
+            let missing = Timestamp::try_from(1u64)?;
+            previous.insert((id, missing));
+            exact.insert(DocumentPrevTsQuery {
+                id,
+                ts: query_ts,
+                prev_ts: missing,
+            });
+        }
+        let validator = Arc::new(NoopRetentionValidator);
+        assert_eq!(
+            persistence
+                .previous_revisions(previous, validator.clone())
+                .await?,
+            expected_previous
+        );
+        assert_eq!(
+            persistence
+                .previous_revisions_of_documents(exact, validator)
+                .await?,
+            expected_exact
+        );
+        assert!(persistence
+            .previous_revisions(BTreeSet::new(), Arc::new(NoopRetentionValidator))
+            .await?
+            .is_empty());
+        assert!(persistence
+            .previous_revisions_of_documents(BTreeSet::new(), Arc::new(NoopRetentionValidator))
             .await?
             .is_empty());
         Ok(())

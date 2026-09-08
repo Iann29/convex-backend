@@ -117,7 +117,7 @@ RUN if [[ -z "$debug" ]]; then strip ./convex-local-backend; strip ./generate_ke
 
 # Final stage: Creates minimal runtime image with only necessary components
 # Uses Ubuntu Noble (24.04) as the base image
-FROM ubuntu:noble
+FROM ubuntu:noble@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517
 ARG VERGEN_GIT_SHA
 ARG CONVEX_RELEASE_VERSION
 ARG AMAGE_PATCH_SHA256

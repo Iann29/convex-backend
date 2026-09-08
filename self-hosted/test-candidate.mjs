@@ -1,6 +1,8 @@
 // Linux-only local acceptance check. Requires Docker via sudo -n and an already
 // built Convex CLI checkout. No package installation, publication, or real data.
-// CONVEX_CLI_REPO=/path/to/checkout node self-hosted/test-candidate.mjs IMAGE
+// CONVEX_CLI_REPO=/path/to/checkout node self-hosted/test-candidate.mjs IMAGE [--manifest FILE]
+// The manifest (default: self-hosted/amage-candidate4.json) is the identity
+// contract: base revision, patch hash and the paths that hash covers.
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
@@ -31,8 +33,20 @@ const require = createRequire(import.meta.url);
 const { ConvexHttpClient, ConvexClient } = require(
   path.join(cliRepo, "npm-packages/convex/dist/cjs/browser/index.js"),
 );
-const tag = process.argv[2];
-assert(tag, "Pass a local candidate image tag or ID");
+const args = process.argv.slice(2);
+let manifestPath = path.join(root, "self-hosted", "amage-candidate4.json");
+const manifestFlag = args.indexOf("--manifest");
+if (manifestFlag >= 0) {
+  const [, value] = args.splice(manifestFlag, 2);
+  assert(value && !value.startsWith("--"), "--manifest requires a file path");
+  manifestPath = path.resolve(value);
+}
+assert.equal(
+  args.length,
+  1,
+  `Pass exactly one local candidate image tag or ID, got: ${args.join(" ") || "(none)"}`,
+);
+const [tag] = args;
 const owner = `amage-close-${randomUUID().slice(0, 8)}`;
 const containers = [],
   volumes = [],
@@ -537,13 +551,22 @@ with zipfile.ZipFile(sys.argv[1]) as archive:
 try {
   const [image] = JSON.parse(await docker(["image", "inspect", tag]));
   const labels = image.Config.Labels;
-  const manifest = JSON.parse(
-    await readFile(
-      path.join(root, "self-hosted", "amage-candidate4.json"),
-      "utf8",
-    ),
-  );
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
   const base = manifest.base;
+  assert(/^[0-9a-f]{40}$/.test(base), "manifest.base must be a full commit");
+  // Paths whose diff against `base` is the patch hash. C4 covered crates and
+  // the Dockerfile; a later candidate may add Cargo.lock. The manifest owns
+  // this list: nothing on the command line can widen or narrow it.
+  const patchPaths = manifest.patchPaths ?? [
+    "crates",
+    "self-hosted/docker-build/Dockerfile.backend",
+  ];
+  assert(
+    Array.isArray(patchPaths) &&
+      patchPaths.length > 0 &&
+      patchPaths.every((p) => typeof p === "string" && !p.startsWith("/")),
+    "manifest.patchPaths must be repository-relative paths",
+  );
   const { stdout: patch } = await exec(
     "git",
     [
@@ -558,8 +581,7 @@ try {
       "--abbrev=9",
       base,
       "--",
-      "crates",
-      "self-hosted/docker-build/Dockerfile.backend",
+      ...patchPaths,
     ],
     { encoding: "buffer" },
   );
@@ -579,6 +601,8 @@ try {
       imageId: image.Id,
       version,
       patchSha256: digest(patch),
+      manifest: path.relative(root, manifestPath),
+      patchPaths,
       owner,
     }),
   );

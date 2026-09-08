@@ -1,0 +1,5232 @@
+{
+  "environment": {
+    "vcpus": 16,
+    "memoryGiB": 32,
+    "backendQuotaCpus": 6,
+    "backendMemoryGiB": 8,
+    "companies": 100,
+    "seedDocuments": 330000,
+    "storage": "Disposable Namespace instance disk; SQLite WAL with default FULL synchronous",
+    "httpSlots": 64,
+    "maxSockets": 512,
+    "writeMiBPerSecond": 16,
+    "distribution": "Uniform synthetic tenants; not the Uze application",
+    "scope": "Heavy G3/P12/batching defaults; G1 and G4 declare their differing settings in each gate. Recovery is local."
+  },
+  "image": "sha256:fd744b3dbe917df467be827157192171e7a869da4bb87be346a35bf559df92eb",
+  "gates": {
+    "g3": {
+      "cells": [
+        {
+          "cell": "g3-1-c5a-sqlite-wal64",
+          "variant": "a",
+          "drainSeconds": 82.045620695,
+          "pendingAtStop": 8438,
+          "elapsedLoadAndDrainSeconds": 202.039,
+          "http": {
+            "totalMs": {
+              "p50": 44064.341044,
+              "p95": 78897.78763200002,
+              "p99": 81402.11910099999,
+              "max": 82277.36166200001
+            },
+            "headMs": {
+              "p50": 44030.20483,
+              "p95": 78873.50114800001,
+              "p99": 81341.72657500001,
+              "max": 82277.26266800001
+            },
+            "handlerLogMs": {
+              "p50": 596.429,
+              "p95": 1051.001,
+              "p99": 1265.423,
+              "max": 1634.605
+            },
+            "gapMs": {
+              "p50": 43414.48752300002,
+              "p95": 78327.33285,
+              "p99": 80734.27644500001,
+              "max": 81646.94892799997
+            },
+            "headerGapMs": {
+              "p50": 43394.659379,
+              "p95": 78314.06791999999,
+              "p99": 80697.64317699999,
+              "max": 81646.007574
+            },
+            "siteGapMs": {
+              "p50": 43414.48752300002,
+              "p95": 78327.33285,
+              "p99": 80734.27644500001,
+              "max": 81646.94892799997
+            },
+            "dispatchLagMs": {
+              "p50": -0.34415000000444707,
+              "p95": 0.5360890000010841,
+              "p99": 1.675967999995919,
+              "max": 80.75347199998214
+            },
+            "socketWaitMs": {
+              "p50": 38051.364180000004,
+              "p95": 74336.75843400002,
+              "p99": 76537.596938,
+              "max": 77154.43237600001
+            },
+            "gapAfterSocketMs": {
+              "p50": 4450.565263999997,
+              "p95": 5972.647557999993,
+              "p99": 6399.9979529999955,
+              "max": 6912.399620999993
+            }
+          },
+          "sqliteCalls": 106110.0,
+          "runtimePer1000SqliteCalls": {
+            "tokio_budget_forced_yield_count": 593.3559513712186,
+            "tokio_elapsed": 1.9041552867024787,
+            "tokio_io_driver_ready_count": 189.6993685797757,
+            "tokio_num_remote_schedules": 3794.2700970690794,
+            "tokio_total_busy_duration": 5.39181437920083,
+            "tokio_total_local_schedule_count": 3343.8507209499576,
+            "tokio_total_noop_count": 38.686268966167184,
+            "tokio_total_overflow_count": 0.0,
+            "tokio_total_park_count": 90.2459711620017,
+            "tokio_total_polls_count": 7138.083121289228,
+            "tokio_total_steal_count": 248.72302327773065,
+            "tokio_total_steal_operations": 79.813401187447
+          },
+          "permitFlavors": [],
+          "correct": true
+        },
+        {
+          "cell": "g3-2-c5b-sqlite-wal64",
+          "variant": "b",
+          "drainSeconds": 77.12665753600001,
+          "pendingAtStop": 7945,
+          "elapsedLoadAndDrainSeconds": 197.12,
+          "http": {
+            "totalMs": {
+              "p50": 38532.323485,
+              "p95": 74491.29732699998,
+              "p99": 76555.662511,
+              "max": 77274.06491700001
+            },
+            "headMs": {
+              "p50": 38532.280545000016,
+              "p95": 74491.278923,
+              "p99": 76555.63913700002,
+              "max": 77273.99327400001
+            },
+            "handlerLogMs": {
+              "p50": 563.042,
+              "p95": 993.96,
+              "p99": 1402.82,
+              "max": 2187.458
+            },
+            "gapMs": {
+              "p50": 37821.724805,
+              "p95": 73969.04272599997,
+              "p99": 75968.78576100002,
+              "max": 76629.430148
+            },
+            "headerGapMs": {
+              "p50": 37821.462124000005,
+              "p95": 73968.87174699998,
+              "p99": 75968.56545000001,
+              "max": 76629.41224399999
+            },
+            "siteGapMs": {
+              "p50": 37821.724805,
+              "p95": 73969.04272599997,
+              "p99": 75968.78576100002,
+              "max": 76629.430148
+            },
+            "dispatchLagMs": {
+              "p50": -0.30543399999442045,
+              "p95": 0.3331340000149794,
+              "p99": 0.669147000007797,
+              "max": 71.36462599999504
+            },
+            "socketWaitMs": {
+              "p50": 32778.97689399999,
+              "p95": 70151.63993800001,
+              "p99": 72076.12349899998,
+              "max": 72553.623161
+            },
+            "gapAfterSocketMs": {
+              "p50": 4359.659857000013,
+              "p95": 5321.664922000004,
+              "p99": 7842.989061000011,
+              "max": 8553.096104
+            }
+          },
+          "sqliteCalls": 107587.0,
+          "runtimePer1000SqliteCalls": {
+            "tokio_budget_forced_yield_count": 557.697491332596,
+            "tokio_elapsed": 1.8322593938672886,
+            "tokio_io_driver_ready_count": 191.85403440936173,
+            "tokio_num_remote_schedules": 5903.361930344745,
+            "tokio_total_busy_duration": 0.8381231467184697,
+            "tokio_total_local_schedule_count": 4089.2301114446914,
+            "tokio_total_noop_count": 5542.035747813397,
+            "tokio_total_overflow_count": 0.0,
+            "tokio_total_park_count": 11840.919441940012,
+            "tokio_total_polls_count": 9992.58274698616,
+            "tokio_total_steal_count": 1507.8122821530483,
+            "tokio_total_steal_operations": 1502.9882792530695
+          },
+          "permitFlavors": [
+            "multi"
+          ],
+          "correct": true
+        },
+        {
+          "cell": "g3-3-c5b-sqlite-wal64",
+          "variant": "b",
+          "drainSeconds": 50.961251938000004,
+          "pendingAtStop": 5583,
+          "elapsedLoadAndDrainSeconds": 170.955,
+          "http": {
+            "totalMs": {
+              "p50": 21286.170914000002,
+              "p95": 47790.931923,
+              "p99": 50315.53008900001,
+              "max": 51063.99709399999
+            },
+            "headMs": {
+              "p50": 21286.128595000002,
+              "p95": 47790.88985400001,
+              "p99": 50315.44967900001,
+              "max": 51063.868694000004
+            },
+            "handlerLogMs": {
+              "p50": 418.155,
+              "p95": 802.934,
+              "p99": 846.449,
+              "max": 960.392
+            },
+            "gapMs": {
+              "p50": 20736.277347000007,
+              "p95": 47208.418767,
+              "p99": 49737.68249200001,
+              "max": 50374.35599799997
+            },
+            "headerGapMs": {
+              "p50": 20736.226973000008,
+              "p95": 47208.303662,
+              "p99": 49737.62955299999,
+              "max": 50374.21310099999
+            },
+            "siteGapMs": {
+              "p50": 20736.277347000007,
+              "p95": 47208.418767,
+              "p99": 49737.68249200001,
+              "max": 50374.35599799997
+            },
+            "dispatchLagMs": {
+              "p50": -0.40204699999594595,
+              "p95": 0.08679100000153994,
+              "p99": 0.1773819999943953,
+              "max": 10.62282299999788
+            },
+            "socketWaitMs": {
+              "p50": 16828.687223999994,
+              "p95": 43144.258050000004,
+              "p99": 45542.01224499999,
+              "max": 46239.371705
+            },
+            "gapAfterSocketMs": {
+              "p50": 3900.345278000008,
+              "p95": 4160.3549459999995,
+              "p99": 4207.040529999984,
+              "max": 4269.461682000001
+            }
+          },
+          "sqliteCalls": 106993.0,
+          "runtimePer1000SqliteCalls": {
+            "tokio_budget_forced_yield_count": 560.8591216247793,
+            "tokio_elapsed": 1.5978809462675128,
+            "tokio_io_driver_ready_count": 192.65746357238325,
+            "tokio_num_remote_schedules": 5953.118428308394,
+            "tokio_total_busy_duration": 0.699553270531717,
+            "tokio_total_local_schedule_count": 4140.0652379127605,
+            "tokio_total_noop_count": 5789.827371884142,
+            "tokio_total_overflow_count": 0.0,
+            "tokio_total_park_count": 12279.924854897048,
+            "tokio_total_polls_count": 10093.183666221155,
+            "tokio_total_steal_count": 1555.6344807604237,
+            "tokio_total_steal_operations": 1552.1950034114382
+          },
+          "permitFlavors": [
+            "multi"
+          ],
+          "correct": true
+        },
+        {
+          "cell": "g3-4-c5a-sqlite-wal64",
+          "variant": "a",
+          "drainSeconds": 49.60537573900001,
+          "pendingAtStop": 5402,
+          "elapsedLoadAndDrainSeconds": 169.6,
+          "http": {
+            "totalMs": {
+              "p50": 17932.647030000007,
+              "p95": 46840.93163800001,
+              "p99": 49082.23688499999,
+              "max": 49812.374297
+            },
+            "headMs": {
+              "p50": 17898.010215000002,
+              "p95": 46791.69212000002,
+              "p99": 49027.63680199999,
+              "max": 49790.99283099998
+            },
+            "handlerLogMs": {
+              "p50": 490.619,
+              "p95": 845.415,
+              "p99": 948.563,
+              "max": 1143.659
+            },
+            "gapMs": {
+              "p50": 17401.333230999993,
+              "p95": 46291.07714699999,
+              "p99": 48491.89874699999,
+              "max": 49207.643875999995
+            },
+            "headerGapMs": {
+              "p50": 17380.359807,
+              "p95": 46255.69385500001,
+              "p99": 48460.878797000005,
+              "max": 49207.551352999995
+            },
+            "siteGapMs": {
+              "p50": 17401.333230999993,
+              "p95": 46291.07714699999,
+              "p99": 48491.89874699999,
+              "max": 49207.643875999995
+            },
+            "dispatchLagMs": {
+              "p50": -0.42380899999989197,
+              "p95": 0.1999319999886211,
+              "p99": 0.8182249999954365,
+              "max": 20.91571999998996
+            },
+            "socketWaitMs": {
+              "p50": 13640.879455999995,
+              "p95": 42172.291303999984,
+              "p99": 44546.334882999974,
+              "max": 45127.25403499999
+            },
+            "gapAfterSocketMs": {
+              "p50": 3824.097014000001,
+              "p95": 4338.161687000007,
+              "p99": 4509.295157000015,
+              "max": 4731.511520000007
+            }
+          },
+          "sqliteCalls": 106069.0,
+          "runtimePer1000SqliteCalls": {
+            "tokio_budget_forced_yield_count": 593.1799111898857,
+            "tokio_elapsed": 1.59903242025474,
+            "tokio_io_driver_ready_count": 190.38550377584403,
+            "tokio_num_remote_schedules": 3799.9698309590926,
+            "tokio_total_busy_duration": 4.527113500787223,
+            "tokio_total_local_schedule_count": 3339.0528806720154,
+            "tokio_total_noop_count": 55.65245264874751,
+            "tokio_total_overflow_count": 0.0,
+            "tokio_total_park_count": 124.46614939331944,
+            "tokio_total_polls_count": 7139.013283805824,
+            "tokio_total_steal_count": 236.86468242370532,
+            "tokio_total_steal_operations": 77.70413598695188
+          },
+          "permitFlavors": [],
+          "correct": true
+        }
+      ],
+      "medians": {
+        "a": {
+          "drainSeconds": 65.825498217,
+          "httpP95Ms": 62869.359635000015,
+          "httpP99Ms": 65242.17799299999,
+          "gapAfterSocketP95Ms": 5155.4046225,
+          "gapAfterSocketP99Ms": 5454.646555000005
+        },
+        "b": {
+          "drainSeconds": 64.043954737,
+          "httpP95Ms": 61141.11462499999,
+          "httpP99Ms": 63435.596300000005,
+          "gapAfterSocketP95Ms": 4741.0099340000015,
+          "gapAfterSocketP99Ms": 6025.0147954999975
+        }
+      },
+      "ratio": {
+        "drainSeconds": 0.9729353589679341,
+        "httpP95Ms": 0.9725105358153211,
+        "httpP99Ms": 0.9723096047898061,
+        "gapAfterSocketP95Ms": 0.9196193666950147,
+        "gapAfterSocketP99Ms": 1.1045655726267294
+      },
+      "note": "Two observations per variant: descriptive medians, no confidence interval or production capacity claim.",
+      "resourceSummary": [
+        {
+          "cell": "g3-1-c5a-sqlite-wal64",
+          "drainSeconds": 82.045620695,
+          "cpuMeanPercent": 328.6364,
+          "cpuPeakPercent": 394.38,
+          "cpuSamples": 50,
+          "runtimeBusySeconds": 572.125423777,
+          "holdSeconds": 196.32450701400015,
+          "spanSeconds": 202.039,
+          "residualMeanMs": 71.95280405553149,
+          "gapAfterSocketP95Ms": 5972.647557999993,
+          "gapAfterSocketP99Ms": 6399.9979529999955
+        },
+        {
+          "cell": "g3-2-c5b-sqlite-wal64",
+          "drainSeconds": 77.12665753600001,
+          "cpuMeanPercent": 309.68387755102043,
+          "cpuPeakPercent": 401.08,
+          "cpuSamples": 49,
+          "runtimeBusySeconds": 90.171154986,
+          "holdSeconds": 189.8309752929996,
+          "spanSeconds": 197.12,
+          "residualMeanMs": 0.5902183122288989,
+          "gapAfterSocketP95Ms": 5321.664922000004,
+          "gapAfterSocketP99Ms": 7842.989061000011
+        },
+        {
+          "cell": "g3-3-c5b-sqlite-wal64",
+          "drainSeconds": 50.961251938000004,
+          "cpuMeanPercent": 303.06069767441863,
+          "cpuPeakPercent": 355.98,
+          "cpuSamples": 43,
+          "runtimeBusySeconds": 74.847303074,
+          "holdSeconds": 165.44051572799972,
+          "spanSeconds": 170.955,
+          "residualMeanMs": 0.4395624002063414,
+          "gapAfterSocketP95Ms": 4160.3549459999995,
+          "gapAfterSocketP99Ms": 4207.040529999984
+        },
+        {
+          "cell": "g3-4-c5a-sqlite-wal64",
+          "drainSeconds": 49.60537573900001,
+          "cpuMeanPercent": 306.1907142857143,
+          "cpuPeakPercent": 365.87,
+          "cpuSamples": 42,
+          "runtimeBusySeconds": 480.186401915,
+          "holdSeconds": 166.34778424799973,
+          "spanSeconds": 169.6,
+          "residualMeanMs": 60.510189717028425,
+          "gapAfterSocketP95Ms": 4338.161687000007,
+          "gapAfterSocketP99Ms": 4509.295157000015
+        }
+      ]
+    },
+    "p12": {
+      "cells": [
+        {
+          "cell": "p12-1-control-sqlite-wal64",
+          "variant": "a",
+          "drainSeconds": 49.94474419000001,
+          "pendingAtStop": 5616,
+          "elapsedLoadAndDrainSeconds": 169.938,
+          "http": {
+            "totalMs": {
+              "p50": 21689.494326,
+              "p95": 46081.126029999985,
+              "p99": 49164.46454799999,
+              "max": 50065.744504
+            },
+            "headMs": {
+              "p50": 21689.469729999997,
+              "p95": 46081.102205,
+              "p99": 49164.39157199999,
+              "max": 50065.725808999996
+            },
+            "handlerLogMs": {
+              "p50": 431.97,
+              "p95": 795.908,
+              "p99": 876.842,
+              "max": 1079.23
+            },
+            "gapMs": {
+              "p50": 21159.44175099999,
+              "p95": 45339.562465999996,
+              "p99": 48525.53694800001,
+              "max": 49361.019771000014
+            },
+            "headerGapMs": {
+              "p50": 21159.23352200001,
+              "p95": 45339.388801000016,
+              "p99": 48525.44836299999,
+              "max": 49361.00150700003
+            },
+            "siteGapMs": {
+              "p50": 21159.44175099999,
+              "p95": 45339.562465999996,
+              "p99": 48525.53694800001,
+              "max": 49361.019771000014
+            },
+            "dispatchLagMs": {
+              "p50": -0.3531970000040019,
+              "p95": 0.35889299999689683,
+              "p99": 0.49143899999035057,
+              "max": 18.288681999998516
+            },
+            "socketWaitMs": {
+              "p50": 17414.190440000006,
+              "p95": 40955.355308,
+              "p99": 44198.61375299998,
+              "max": 44912.500753
+            },
+            "gapAfterSocketMs": {
+              "p50": 3769.0967429999982,
+              "p95": 4313.764301000003,
+              "p99": 4710.567627000011,
+              "max": 4884.564295000004
+            }
+          },
+          "sqliteCalls": 107315.0,
+          "runtimePer1000SqliteCalls": {
+            "tokio_budget_forced_yield_count": 559.1296650048921,
+            "tokio_elapsed": 1.5836123921632577,
+            "tokio_io_driver_ready_count": 191.89302520616874,
+            "tokio_num_remote_schedules": 5955.719144574384,
+            "tokio_total_busy_duration": 0.6765674236779574,
+            "tokio_total_local_schedule_count": 4146.419419466059,
+            "tokio_total_noop_count": 5637.189582071472,
+            "tokio_total_overflow_count": 0.0,
+            "tokio_total_park_count": 12025.355262544845,
+            "tokio_total_polls_count": 10102.13856404044,
+            "tokio_total_steal_count": 1537.2874248707078,
+            "tokio_total_steal_operations": 1533.280529282952
+          },
+          "permitFlavors": [
+            "multi"
+          ],
+          "correct": true
+        },
+        {
+          "cell": "p12-2-prepared-sqlite-wal64",
+          "variant": "b",
+          "drainSeconds": 52.06241885699998,
+          "pendingAtStop": 5939,
+          "elapsedLoadAndDrainSeconds": 172.056,
+          "http": {
+            "totalMs": {
+              "p50": 26271.509034999995,
+              "p95": 49097.21342300001,
+              "p99": 51421.91861200001,
+              "max": 52179.64713299999
+            },
+            "headMs": {
+              "p50": 26271.377339,
+              "p95": 49097.06758100001,
+              "p99": 51421.882014,
+              "max": 52179.57026899999
+            },
+            "handlerLogMs": {
+              "p50": 452.081,
+              "p95": 822.653,
+              "p99": 886.585,
+              "max": 1019.846
+            },
+            "gapMs": {
+              "p50": 25731.149449999994,
+              "p95": 48537.82295900002,
+              "p99": 50813.694832,
+              "max": 51512.714813
+            },
+            "headerGapMs": {
+              "p50": 25731.077706000007,
+              "p95": 48537.806418,
+              "p99": 50813.57281400001,
+              "max": 51512.51524000001
+            },
+            "siteGapMs": {
+              "p50": 25731.149449999994,
+              "p95": 48537.82295900002,
+              "p99": 50813.694832,
+              "max": 51512.714813
+            },
+            "dispatchLagMs": {
+              "p50": -0.3598609999899054,
+              "p95": 0.18653800000902265,
+              "p99": 0.2998449999940931,
+              "max": 29.218533999999636
+            },
+            "socketWaitMs": {
+              "p50": 21985.13435400001,
+              "p95": 44691.68426000001,
+              "p99": 46754.202808,
+              "max": 47372.29031400001
+            },
+            "gapAfterSocketMs": {
+              "p50": 3872.7801519999994,
+              "p95": 4374.183492999997,
+              "p99": 4478.370779000004,
+              "max": 4525.598443999996
+            }
+          },
+          "sqliteCalls": 105669.0,
+          "runtimePer1000SqliteCalls": {
+            "tokio_budget_forced_yield_count": 567.8581230067475,
+            "tokio_elapsed": 1.628327007116562,
+            "tokio_io_driver_ready_count": 195.5729684202557,
+            "tokio_num_remote_schedules": 5847.239966309892,
+            "tokio_total_busy_duration": 0.7721033410460969,
+            "tokio_total_local_schedule_count": 3899.3744617626744,
+            "tokio_total_noop_count": 5519.130492386603,
+            "tokio_total_overflow_count": 0.0,
+            "tokio_total_park_count": 11695.975167740775,
+            "tokio_total_polls_count": 9746.614428072568,
+            "tokio_total_steal_count": 1462.5386821111206,
+            "tokio_total_steal_operations": 1458.3084916105952
+          },
+          "permitFlavors": [
+            "multi"
+          ],
+          "correct": true
+        },
+        {
+          "cell": "p12-3-prepared-sqlite-wal64",
+          "variant": "b",
+          "drainSeconds": 70.37105622,
+          "pendingAtStop": 6537,
+          "elapsedLoadAndDrainSeconds": 190.365,
+          "http": {
+            "totalMs": {
+              "p50": 20091.390310000003,
+              "p95": 64570.61471200001,
+              "p99": 69291.962494,
+              "max": 70464.67558099999
+            },
+            "headMs": {
+              "p50": 20091.362016999992,
+              "p95": 64570.59119800001,
+              "p99": 69291.88418800003,
+              "max": 70464.32911300001
+            },
+            "handlerLogMs": {
+              "p50": 545.572,
+              "p95": 1013.581,
+              "p99": 1124.602,
+              "max": 1353.262
+            },
+            "gapMs": {
+              "p50": 19431.340022999997,
+              "p95": 63927.556184,
+              "p99": 68536.045457,
+              "max": 69699.214021
+            },
+            "headerGapMs": {
+              "p50": 19431.311780000004,
+              "p95": 63927.418026000014,
+              "p99": 68535.70926900001,
+              "max": 69699.14783700001
+            },
+            "siteGapMs": {
+              "p50": 19431.340022999997,
+              "p95": 63927.556184,
+              "p99": 68536.045457,
+              "max": 69699.214021
+            },
+            "dispatchLagMs": {
+              "p50": -0.3882210000010673,
+              "p95": 0.45950599998468533,
+              "p99": 0.8145019999938086,
+              "max": 72.66064200000255
+            },
+            "socketWaitMs": {
+              "p50": 14803.311072000011,
+              "p95": 59488.34010199999,
+              "p99": 63076.64648800003,
+              "max": 64360.882817000005
+            },
+            "gapAfterSocketMs": {
+              "p50": 4416.2911870000025,
+              "p95": 5416.024528999977,
+              "p99": 5825.426742000007,
+              "max": 5937.406700999985
+            }
+          },
+          "sqliteCalls": 106132.0,
+          "runtimePer1000SqliteCalls": {
+            "tokio_budget_forced_yield_count": 565.3996909508913,
+            "tokio_elapsed": 1.7937300065296045,
+            "tokio_io_driver_ready_count": 193.91889345343535,
+            "tokio_num_remote_schedules": 5789.6770059925375,
+            "tokio_total_busy_duration": 0.8696188714336863,
+            "tokio_total_local_schedule_count": 3923.972034824558,
+            "tokio_total_noop_count": 5224.380959559793,
+            "tokio_total_overflow_count": 0.0,
+            "tokio_total_park_count": 11173.745901330418,
+            "tokio_total_polls_count": 9713.649040817096,
+            "tokio_total_steal_count": 1413.984472166736,
+            "tokio_total_steal_operations": 1408.359401500019
+          },
+          "permitFlavors": [
+            "multi"
+          ],
+          "correct": true
+        },
+        {
+          "cell": "p12-4-control-sqlite-wal64",
+          "variant": "a",
+          "drainSeconds": 105.40829356799995,
+          "pendingAtStop": 8476,
+          "elapsedLoadAndDrainSeconds": 225.402,
+          "http": {
+            "totalMs": {
+              "p50": 42984.487488,
+              "p95": 99638.06167200001,
+              "p99": 103933.090008,
+              "max": 105422.39352400001
+            },
+            "headMs": {
+              "p50": 42984.392401000005,
+              "p95": 99637.94333999997,
+              "p99": 103933.05499300003,
+              "max": 105422.253432
+            },
+            "handlerLogMs": {
+              "p50": 671.792,
+              "p95": 1185.577,
+              "p99": 1671.101,
+              "max": 2428.961
+            },
+            "gapMs": {
+              "p50": 42301.704798000006,
+              "p95": 98933.56143600002,
+              "p99": 103244.76904099999,
+              "max": 104310.693429
+            },
+            "headerGapMs": {
+              "p50": 42301.650536000016,
+              "p95": 98933.44039000003,
+              "p99": 103244.75074599998,
+              "max": 104310.60276000001
+            },
+            "siteGapMs": {
+              "p50": 42301.704798000006,
+              "p95": 98933.56143600002,
+              "p99": 103244.76904099999,
+              "max": 104310.693429
+            },
+            "dispatchLagMs": {
+              "p50": -0.29649600002449006,
+              "p95": 0.31171500000345986,
+              "p99": 0.7715409999946132,
+              "max": 84.97052699999767
+            },
+            "socketWaitMs": {
+              "p50": 36859.069489999994,
+              "p95": 93975.24055599998,
+              "p99": 98114.04119099997,
+              "max": 99285.33980799999
+            },
+            "gapAfterSocketMs": {
+              "p50": 5013.060375000001,
+              "p95": 7208.371281000029,
+              "p99": 9120.993118999992,
+              "max": 9924.856788999998
+            }
+          },
+          "sqliteCalls": 108542.0,
+          "runtimePer1000SqliteCalls": {
+            "tokio_budget_forced_yield_count": 552.7998378507859,
+            "tokio_elapsed": 2.076713364126329,
+            "tokio_io_driver_ready_count": 189.5855982016178,
+            "tokio_num_remote_schedules": 5833.465386670598,
+            "tokio_total_busy_duration": 0.9717501343535221,
+            "tokio_total_local_schedule_count": 4053.2144239096388,
+            "tokio_total_noop_count": 5144.331226621953,
+            "tokio_total_overflow_count": 0.0,
+            "tokio_total_park_count": 11133.340089550587,
+            "tokio_total_polls_count": 9886.679810580237,
+            "tokio_total_steal_count": 1419.6532217943286,
+            "tokio_total_steal_operations": 1413.7016085939083
+          },
+          "permitFlavors": [
+            "multi"
+          ],
+          "correct": true
+        }
+      ],
+      "medians": {
+        "a": {
+          "drainSeconds": 77.67651887899999,
+          "httpP95Ms": 72859.593851,
+          "httpP99Ms": 76548.777278,
+          "gapAfterSocketP95Ms": 5761.067791000016,
+          "gapAfterSocketP99Ms": 6915.780373000001
+        },
+        "b": {
+          "drainSeconds": 61.21673753849999,
+          "httpP95Ms": 56833.91406750001,
+          "httpP99Ms": 60356.94055300001,
+          "gapAfterSocketP95Ms": 4895.104010999987,
+          "gapAfterSocketP99Ms": 5151.898760500006
+        }
+      },
+      "ratio": {
+        "drainSeconds": 0.7880983651424944,
+        "httpP95Ms": 0.7800470887022377,
+        "httpP99Ms": 0.7884768731681167,
+        "gapAfterSocketP95Ms": 0.8496869310663477,
+        "gapAfterSocketP99Ms": 0.7449482896555837
+      },
+      "note": "Two observations per variant: descriptive medians, no confidence interval or production capacity claim.",
+      "resourceSummary": [
+        {
+          "cell": "p12-1-control-sqlite-wal64",
+          "drainSeconds": 49.94474419000001,
+          "cpuMeanPercent": 313.05428571428575,
+          "cpuPeakPercent": 385.16,
+          "cpuSamples": 42,
+          "runtimeBusySeconds": 72.605833072,
+          "holdSeconds": 164.38566939200058,
+          "spanSeconds": 169.938,
+          "residualMeanMs": 0.4210312757440988,
+          "gapAfterSocketP95Ms": 4313.764301000003,
+          "gapAfterSocketP99Ms": 4710.567627000011
+        },
+        {
+          "cell": "p12-2-prepared-sqlite-wal64",
+          "drainSeconds": 52.06241885699998,
+          "cpuMeanPercent": 325.71953488372094,
+          "cpuPeakPercent": 426.39,
+          "cpuSamples": 43,
+          "runtimeBusySeconds": 81.587387945,
+          "holdSeconds": 166.31920591300008,
+          "spanSeconds": 172.056,
+          "residualMeanMs": 0.49155189468910976,
+          "gapAfterSocketP95Ms": 4374.183492999997,
+          "gapAfterSocketP99Ms": 4478.370779000004
+        },
+        {
+          "cell": "p12-3-prepared-sqlite-wal64",
+          "drainSeconds": 70.37105622,
+          "cpuMeanPercent": 331.4531914893617,
+          "cpuPeakPercent": 409.42,
+          "cpuSamples": 47,
+          "runtimeBusySeconds": 92.294390063,
+          "holdSeconds": 182.80430131300005,
+          "spanSeconds": 190.365,
+          "residualMeanMs": 0.6451049669476561,
+          "gapAfterSocketP95Ms": 5416.024528999977,
+          "gapAfterSocketP99Ms": 5825.426742000007
+        },
+        {
+          "cell": "p12-4-control-sqlite-wal64",
+          "drainSeconds": 105.40829356799995,
+          "cpuMeanPercent": 310.9630357142857,
+          "cpuPeakPercent": 357.28,
+          "cpuSamples": 56,
+          "runtimeBusySeconds": 105.475703083,
+          "holdSeconds": 215.69265311200002,
+          "spanSeconds": 225.402,
+          "residualMeanMs": 0.7872891952774808,
+          "gapAfterSocketP95Ms": 7208.371281000029,
+          "gapAfterSocketP99Ms": 9120.993118999992
+        }
+      ]
+    },
+    "g2": [
+      {
+        "variant": "c4",
+        "engine": "sqlite",
+        "persistSeconds": 300,
+        "retries": {
+          "T1": 0,
+          "F": 0,
+          "N": 0,
+          "E": 0
+        },
+        "attemptsByClass": {
+          "T1": {},
+          "F": {},
+          "N": {},
+          "E": {}
+        },
+        "finalStates": {
+          "T1": "failed",
+          "F": "failed",
+          "N": "failed",
+          "E": "canceled"
+        },
+        "messages": {
+          "T1": 0,
+          "N": 0,
+          "E": 0
+        },
+        "observed": {
+          "transientRecovered": false,
+          "canceledNeverRan": true,
+          "cancelUnderTimeout": true,
+          "retryLogLines": 0
+        },
+        "injectionValid": true,
+        "executionTimeoutProof": {
+          "stage": "injection-validity",
+          "engine": "sqlite",
+          "injection": {
+            "T1": true,
+            "F": true,
+            "E": false
+          },
+          "injectionValid": true,
+          "attemptsByClass": {
+            "T1": {},
+            "F": {},
+            "N": {},
+            "E": {}
+          }
+        }
+      },
+      {
+        "variant": "c4",
+        "engine": "postgres",
+        "persistSeconds": 300,
+        "retries": {
+          "T1": 0,
+          "F": 0,
+          "N": 0,
+          "E": 0
+        },
+        "attemptsByClass": {
+          "T1": {},
+          "F": {},
+          "N": {},
+          "E": {}
+        },
+        "finalStates": {
+          "T1": "failed",
+          "F": "failed",
+          "N": "failed",
+          "E": "canceled"
+        },
+        "messages": {
+          "T1": 0,
+          "N": 0,
+          "E": 0
+        },
+        "observed": {
+          "transientRecovered": false,
+          "canceledNeverRan": true,
+          "cancelUnderTimeout": true,
+          "retryLogLines": 0
+        },
+        "injectionValid": true,
+        "executionTimeoutProof": {
+          "stage": "injection-validity",
+          "engine": "postgres",
+          "injection": {
+            "T1": true,
+            "F": true,
+            "E": false
+          },
+          "injectionValid": true,
+          "attemptsByClass": {
+            "T1": {},
+            "F": {},
+            "N": {},
+            "E": {}
+          }
+        }
+      },
+      {
+        "variant": "c5a",
+        "engine": "sqlite",
+        "persistSeconds": 300,
+        "retries": {
+          "T1": 1,
+          "F": 14,
+          "N": 0,
+          "E": 0
+        },
+        "attemptsByClass": {
+          "T1": {
+            "system_timeout": 1
+          },
+          "F": {
+            "system_timeout": 13,
+            "ambiguous": 1
+          },
+          "N": {},
+          "E": {}
+        },
+        "finalStates": {
+          "T1": "success",
+          "F": "failed",
+          "N": "failed",
+          "E": "canceled"
+        },
+        "messages": {
+          "T1": 1,
+          "N": 0,
+          "E": 0
+        },
+        "observed": {
+          "transientRecovered": true,
+          "canceledNeverRan": true,
+          "cancelUnderTimeout": true,
+          "retryLogLines": 15
+        },
+        "injectionValid": true,
+        "executionTimeoutProof": {
+          "stage": "injection-validity",
+          "engine": "sqlite",
+          "injection": {
+            "T1": true,
+            "F": true,
+            "E": false
+          },
+          "injectionValid": true,
+          "attemptsByClass": {
+            "T1": {
+              "system_timeout": 1
+            },
+            "F": {
+              "system_timeout": 13,
+              "ambiguous": 1
+            },
+            "N": {},
+            "E": {}
+          }
+        }
+      },
+      {
+        "variant": "c5a",
+        "engine": "postgres",
+        "persistSeconds": 300,
+        "retries": {
+          "T1": 16,
+          "F": 14,
+          "N": 0,
+          "E": 0
+        },
+        "attemptsByClass": {
+          "T1": {
+            "system_timeout": 15,
+            "ambiguous": 1
+          },
+          "F": {
+            "ambiguous": 3,
+            "system_timeout": 11
+          },
+          "N": {},
+          "E": {}
+        },
+        "finalStates": {
+          "T1": "success",
+          "F": "failed",
+          "N": "failed",
+          "E": "canceled"
+        },
+        "messages": {
+          "T1": 1,
+          "N": 0,
+          "E": 0
+        },
+        "observed": {
+          "transientRecovered": true,
+          "canceledNeverRan": true,
+          "cancelUnderTimeout": true,
+          "retryLogLines": 30
+        },
+        "injectionValid": true,
+        "executionTimeoutProof": {
+          "stage": "injection-validity",
+          "engine": "postgres",
+          "injection": {
+            "T1": true,
+            "F": true,
+            "E": false
+          },
+          "injectionValid": true,
+          "attemptsByClass": {
+            "T1": {
+              "system_timeout": 15,
+              "ambiguous": 1
+            },
+            "F": {
+              "ambiguous": 3,
+              "system_timeout": 11
+            },
+            "N": {},
+            "E": {}
+          }
+        }
+      },
+      {
+        "variant": "c5b",
+        "engine": "sqlite",
+        "persistSeconds": 60,
+        "retries": {
+          "T1": 7,
+          "F": 8,
+          "N": 0,
+          "E": 0
+        },
+        "attemptsByClass": {
+          "T1": {
+            "system_timeout": 7
+          },
+          "F": {
+            "ambiguous": 3,
+            "system_timeout": 5
+          },
+          "N": {},
+          "E": {}
+        },
+        "finalStates": {
+          "T1": "success",
+          "F": "failed",
+          "N": "failed",
+          "E": "canceled"
+        },
+        "messages": {
+          "T1": 1,
+          "N": 0,
+          "E": 0
+        },
+        "observed": {
+          "transientRecovered": true,
+          "canceledNeverRan": true,
+          "cancelUnderTimeout": true,
+          "retryLogLines": 15
+        },
+        "injectionValid": true,
+        "executionTimeoutProof": {
+          "stage": "injection-validity",
+          "engine": "sqlite",
+          "injection": {
+            "T1": true,
+            "F": true,
+            "E": false
+          },
+          "injectionValid": true,
+          "attemptsByClass": {
+            "T1": {
+              "system_timeout": 7
+            },
+            "F": {
+              "ambiguous": 3,
+              "system_timeout": 5
+            },
+            "N": {},
+            "E": {}
+          }
+        }
+      }
+    ],
+    "g4": {
+      "observational": true,
+      "rows": [
+        {
+          "engine": "postgres",
+          "ids": 50000,
+          "errors": 0,
+          "drainSeconds": 5.73399579799996,
+          "boot": {
+            "source": "/audit/measurements/g4-c5b-p12-postgres-search",
+            "restarts": [
+              {
+                "restart": 1,
+                "startAt": "2026-09-08T14:30:28.002Z",
+                "stopExitCode": 137,
+                "stopOOMKilled": false,
+                "readyMs": 435.9820090000285,
+                "baselineP95Ms": 2.8586989999998877,
+                "thresholdMs": 3.430438799999865,
+                "stableWindowStartMs": 484.050464999993,
+                "stableConfirmedMs": 60486.11822799999,
+                "stableCensoredAtMs": null,
+                "queries": 240,
+                "failedQueries": 1,
+                "queryP95Ms": 2.252236999998786,
+                "snapshots": {
+                  "ready": {
+                    "searchSeconds": null,
+                    "searchCount": null,
+                    "searchRevisions": null,
+                    "searchBytes": null,
+                    "skippedRevisions": 40634.0,
+                    "committerCatchupRevisions": null,
+                    "summarySeconds": 0.013284013,
+                    "summaryFinishSeconds": 0.003996275,
+                    "summaryFinishLabels": [
+                      {
+                        "status": "error"
+                      }
+                    ],
+                    "shapesSeconds": 0.009476672,
+                    "shapesCount": 2.0
+                  },
+                  "120s": {
+                    "searchSeconds": 0.554584085,
+                    "searchCount": 1.0,
+                    "searchRevisions": 1577.0,
+                    "searchBytes": 187519.0,
+                    "skippedRevisions": 96199.0,
+                    "committerCatchupRevisions": null,
+                    "summarySeconds": 0.013284013,
+                    "summaryFinishSeconds": 0.003996275,
+                    "summaryFinishLabels": [
+                      {
+                        "status": "error"
+                      }
+                    ],
+                    "shapesSeconds": 0.009476672,
+                    "shapesCount": 2.0
+                  }
+                }
+              },
+              {
+                "restart": 2,
+                "startAt": "2026-09-08T14:32:38.688Z",
+                "stopExitCode": 137,
+                "stopOOMKilled": false,
+                "readyMs": 420.6293209999567,
+                "baselineP95Ms": 2.8586989999998877,
+                "thresholdMs": 3.430438799999865,
+                "stableWindowStartMs": 468.54712200001086,
+                "stableConfirmedMs": 60470.36520900001,
+                "stableCensoredAtMs": null,
+                "queries": 240,
+                "failedQueries": 1,
+                "queryP95Ms": 2.410514000002877,
+                "snapshots": {
+                  "ready": {
+                    "searchSeconds": null,
+                    "searchCount": null,
+                    "searchRevisions": null,
+                    "searchBytes": null,
+                    "skippedRevisions": 56770.0,
+                    "committerCatchupRevisions": null,
+                    "summarySeconds": 0.012776961,
+                    "summaryFinishSeconds": 0.004413006,
+                    "summaryFinishLabels": [
+                      {
+                        "status": "error"
+                      }
+                    ],
+                    "shapesSeconds": 0.009749696,
+                    "shapesCount": 2.0
+                  },
+                  "120s": {
+                    "searchSeconds": 0.596170572,
+                    "searchCount": 1.0,
+                    "searchRevisions": 1577.0,
+                    "searchBytes": 187519.0,
+                    "skippedRevisions": 96199.0,
+                    "committerCatchupRevisions": null,
+                    "summarySeconds": 0.012776961,
+                    "summaryFinishSeconds": 0.004413006,
+                    "summaryFinishLabels": [
+                      {
+                        "status": "error"
+                      }
+                    ],
+                    "shapesSeconds": 0.009749696,
+                    "shapesCount": 2.0
+                  }
+                }
+              },
+              {
+                "restart": 3,
+                "startAt": "2026-09-08T14:34:49.360Z",
+                "stopExitCode": 137,
+                "stopOOMKilled": false,
+                "readyMs": 412.56045999994967,
+                "baselineP95Ms": 2.8586989999998877,
+                "thresholdMs": 3.430438799999865,
+                "stableWindowStartMs": 454.7592669998994,
+                "stableConfirmedMs": 60456.4671089999,
+                "stableCensoredAtMs": null,
+                "queries": 240,
+                "failedQueries": 1,
+                "queryP95Ms": 2.2809940000006463,
+                "snapshots": {
+                  "ready": {
+                    "searchSeconds": null,
+                    "searchCount": null,
+                    "searchRevisions": null,
+                    "searchBytes": null,
+                    "skippedRevisions": 52736.0,
+                    "committerCatchupRevisions": null,
+                    "summarySeconds": 0.009440396,
+                    "summaryFinishSeconds": 0.003527203,
+                    "summaryFinishLabels": [
+                      {
+                        "status": "error"
+                      }
+                    ],
+                    "shapesSeconds": 0.007417635,
+                    "shapesCount": 2.0
+                  },
+                  "120s": {
+                    "searchSeconds": 0.544980598,
+                    "searchCount": 1.0,
+                    "searchRevisions": 1577.0,
+                    "searchBytes": 187519.0,
+                    "skippedRevisions": 96199.0,
+                    "committerCatchupRevisions": null,
+                    "summarySeconds": 0.009440396,
+                    "summaryFinishSeconds": 0.003527203,
+                    "summaryFinishLabels": [
+                      {
+                        "status": "error"
+                      }
+                    ],
+                    "shapesSeconds": 0.007417635,
+                    "shapesCount": 2.0
+                  }
+                }
+              }
+            ],
+            "notes": [
+              "Durations are sums per metric family; overlapping phases must not be added.",
+              "No writes occur between restarts; replay can stay identical without an advancing checkpoint.",
+              "Stable window start is distinct from its 60 second confirmation.",
+              "C4/C5-a/C5-b have a known summary-finish timer status bug: success is recorded as error."
+            ]
+          }
+        },
+        {
+          "engine": "sqlite",
+          "ids": 50000,
+          "errors": 0,
+          "drainSeconds": 319.555626869,
+          "boot": {
+            "source": "/audit/measurements/g4-c5b-p12-sqlite-search",
+            "restarts": [
+              {
+                "restart": 1,
+                "startAt": "2026-09-08T14:50:48.684Z",
+                "stopExitCode": 137,
+                "stopOOMKilled": false,
+                "readyMs": 467.05331200000364,
+                "baselineP95Ms": 2.881247000001167,
+                "thresholdMs": 3.4574964000014003,
+                "stableWindowStartMs": 5520.664337999995,
+                "stableConfirmedMs": 65522.251986999996,
+                "stableCensoredAtMs": null,
+                "queries": 240,
+                "failedQueries": 11,
+                "queryP95Ms": 3.2189690000013798,
+                "snapshots": {
+                  "ready": {
+                    "searchSeconds": null,
+                    "searchCount": null,
+                    "searchRevisions": null,
+                    "searchBytes": null,
+                    "skippedRevisions": 36773.0,
+                    "committerCatchupRevisions": null,
+                    "summarySeconds": 0.023607876,
+                    "summaryFinishSeconds": 0.010316871,
+                    "summaryFinishLabels": [
+                      {
+                        "status": "error"
+                      }
+                    ],
+                    "shapesSeconds": 0.020566738,
+                    "shapesCount": 2.0
+                  },
+                  "120s": {
+                    "searchSeconds": 5.585731517,
+                    "searchCount": 1.0,
+                    "searchRevisions": 10620.0,
+                    "searchBytes": 1262721.0,
+                    "skippedRevisions": 647822.0,
+                    "committerCatchupRevisions": 0.0,
+                    "summarySeconds": 0.023607876,
+                    "summaryFinishSeconds": 0.010316871,
+                    "summaryFinishLabels": [
+                      {
+                        "status": "error"
+                      }
+                    ],
+                    "shapesSeconds": 0.020566738,
+                    "shapesCount": 2.0
+                  }
+                }
+              },
+              {
+                "restart": 2,
+                "startAt": "2026-09-08T14:52:59.439Z",
+                "stopExitCode": 137,
+                "stopOOMKilled": false,
+                "readyMs": 436.1237180000171,
+                "baselineP95Ms": 2.881247000001167,
+                "thresholdMs": 3.4574964000014003,
+                "stableWindowStartMs": 4990.619139999944,
+                "stableConfirmedMs": 64992.466591999946,
+                "stableCensoredAtMs": null,
+                "queries": 240,
+                "failedQueries": 10,
+                "queryP95Ms": 3.3744559999977355,
+                "snapshots": {
+                  "ready": {
+                    "searchSeconds": null,
+                    "searchCount": null,
+                    "searchRevisions": null,
+                    "searchBytes": null,
+                    "skippedRevisions": 51885.0,
+                    "committerCatchupRevisions": null,
+                    "summarySeconds": 0.016367073,
+                    "summaryFinishSeconds": 0.006339145,
+                    "summaryFinishLabels": [
+                      {
+                        "status": "error"
+                      }
+                    ],
+                    "shapesSeconds": 0.014479526999999999,
+                    "shapesCount": 2.0
+                  },
+                  "120s": {
+                    "searchSeconds": 5.229444167,
+                    "searchCount": 1.0,
+                    "searchRevisions": 10620.0,
+                    "searchBytes": 1262721.0,
+                    "skippedRevisions": 647822.0,
+                    "committerCatchupRevisions": 0.0,
+                    "summarySeconds": 0.016367073,
+                    "summaryFinishSeconds": 0.006339145,
+                    "summaryFinishLabels": [
+                      {
+                        "status": "error"
+                      }
+                    ],
+                    "shapesSeconds": 0.014479526999999999,
+                    "shapesCount": 2.0
+                  }
+                }
+              },
+              {
+                "restart": 3,
+                "startAt": "2026-09-08T14:55:10.145Z",
+                "stopExitCode": 137,
+                "stopOOMKilled": false,
+                "readyMs": 444.99683999991976,
+                "baselineP95Ms": 2.881247000001167,
+                "thresholdMs": 3.4574964000014003,
+                "stableWindowStartMs": 5002.447324999899,
+                "stableConfirmedMs": 65004.5628179999,
+                "stableCensoredAtMs": null,
+                "queries": 240,
+                "failedQueries": 10,
+                "queryP95Ms": 3.301760000002105,
+                "snapshots": {
+                  "ready": {
+                    "searchSeconds": null,
+                    "searchCount": null,
+                    "searchRevisions": null,
+                    "searchBytes": null,
+                    "skippedRevisions": 40803.0,
+                    "committerCatchupRevisions": null,
+                    "summarySeconds": 0.020295728,
+                    "summaryFinishSeconds": 0.006936052,
+                    "summaryFinishLabels": [
+                      {
+                        "status": "error"
+                      }
+                    ],
+                    "shapesSeconds": 0.017576806,
+                    "shapesCount": 2.0
+                  },
+                  "120s": {
+                    "searchSeconds": 5.196929512,
+                    "searchCount": 1.0,
+                    "searchRevisions": 10620.0,
+                    "searchBytes": 1262721.0,
+                    "skippedRevisions": 647822.0,
+                    "committerCatchupRevisions": 0.0,
+                    "summarySeconds": 0.020295728,
+                    "summaryFinishSeconds": 0.006936052,
+                    "summaryFinishLabels": [
+                      {
+                        "status": "error"
+                      }
+                    ],
+                    "shapesSeconds": 0.017576806,
+                    "shapesCount": 2.0
+                  }
+                }
+              }
+            ],
+            "notes": [
+              "Durations are sums per metric family; overlapping phases must not be added.",
+              "No writes occur between restarts; replay can stay identical without an advancing checkpoint.",
+              "Stable window start is distinct from its 60 second confirmation.",
+              "C4/C5-a/C5-b have a known summary-finish timer status bug: success is recorded as error."
+            ]
+          }
+        }
+      ]
+    },
+    "g0Vm2": {
+      "passGate": true,
+      "rows": [
+        {
+          "engine": "postgres",
+          "drainSeconds": 0.30820168299999207,
+          "httpP95Ms": 361.4730400000117,
+          "gapP95Ms": 16.13511300000303,
+          "afterSocketP95Ms": 15.880801999999221,
+          "correct": 20000,
+          "errors": 0
+        },
+        {
+          "engine": "sqlite",
+          "drainSeconds": 38.04171073800002,
+          "httpP95Ms": 37079.29909599997,
+          "gapP95Ms": 36655.639244999984,
+          "afterSocketP95Ms": 4030.020259999994,
+          "correct": 20000,
+          "errors": 0
+        }
+      ]
+    },
+    "g1": [
+      {
+        "cell": "g1-postgres-c4-16",
+        "engine": "postgres",
+        "fixtureDocuments": 3000,
+        "companies": 3,
+        "seconds": 120,
+        "messagesPerMinute": 240,
+        "asyncDelayMs": 500,
+        "backendCpus": 2,
+        "statsMs": {
+          "totalMs": {
+            "p50": 510.6394540000001,
+            "p95": 513.6244760000009,
+            "p99": 515.5473069999989,
+            "max": 518.6980599999988
+          },
+          "headMs": {
+            "p50": 510.5288900000014,
+            "p95": 513.4639899999966,
+            "p99": 515.3572609999992,
+            "max": 518.5751909999999
+          },
+          "handlerLogMs": {
+            "p50": 509.822,
+            "p95": 512.559,
+            "p99": 514.336,
+            "max": 517.68
+          },
+          "gapMs": {
+            "p50": 0.8288280000039094,
+            "p95": 1.2072800000014468,
+            "p99": 1.4293129999946927,
+            "max": 2.3267679999996744
+          },
+          "headerGapMs": {
+            "p50": 0.7049999999983925,
+            "p95": 0.9999979999970492,
+            "p99": 1.2227169999983403,
+            "max": 1.749828000000548
+          },
+          "siteGapMs": {
+            "p50": 0.8288280000039094,
+            "p95": 1.2072800000014468,
+            "p99": 1.4293129999946927,
+            "max": 2.3267679999996744
+          },
+          "dispatchLagMs": {
+            "p50": -0.21759000000020023,
+            "p95": 0.5209490000006554,
+            "p99": 0.646058999998786,
+            "max": 1.1990000000000691
+          },
+          "socketWaitMs": {
+            "p50": 0.2260519999981625,
+            "p95": 0.36113399999885587,
+            "p99": 0.4724629999982426,
+            "max": 0.7751989999960642
+          },
+          "gapAfterSocketMs": {
+            "p50": 0.5966690000018957,
+            "p95": 0.8887939999959826,
+            "p99": 1.05167699999663,
+            "max": 2.086860000000115
+          }
+        },
+        "requests": 960,
+        "admissionCheck": {
+          "note": "no http_admission_wait_seconds in dumps",
+          "status": "absent"
+        }
+      },
+      {
+        "cell": "g1-postgres-c5a-16",
+        "engine": "postgres",
+        "fixtureDocuments": 3000,
+        "companies": 3,
+        "seconds": 120,
+        "messagesPerMinute": 240,
+        "asyncDelayMs": 500,
+        "backendCpus": 2,
+        "statsMs": {
+          "totalMs": {
+            "p50": 510.2979940000005,
+            "p95": 512.8157659999997,
+            "p99": 514.8055809999987,
+            "max": 516.8126969999998
+          },
+          "headMs": {
+            "p50": 510.1762869999984,
+            "p95": 512.675599000002,
+            "p99": 514.6469350000002,
+            "max": 516.7132919999999
+          },
+          "handlerLogMs": {
+            "p50": 509.421,
+            "p95": 511.906,
+            "p99": 513.752,
+            "max": 516.034
+          },
+          "gapMs": {
+            "p50": 0.8497339999919973,
+            "p95": 1.1254640000007043,
+            "p99": 1.2542050000014342,
+            "max": 1.6705670000004034
+          },
+          "headerGapMs": {
+            "p50": 0.7176939999997671,
+            "p95": 0.9378160000081266,
+            "p99": 1.0779170000000136,
+            "max": 1.3143749999990746
+          },
+          "siteGapMs": {
+            "p50": 0.8497339999919973,
+            "p95": 1.1254640000007043,
+            "p99": 1.2542050000014342,
+            "max": 1.6705670000004034
+          },
+          "dispatchLagMs": {
+            "p50": -0.33667799999238923,
+            "p95": 0.7260230000101728,
+            "p99": 1.0290639999948326,
+            "max": 1.1833120000001145
+          },
+          "socketWaitMs": {
+            "p50": 0.21448099999997794,
+            "p95": 0.34355999999388587,
+            "p99": 0.47021899999890593,
+            "max": 0.7707369999989169
+          },
+          "gapAfterSocketMs": {
+            "p50": 0.6334679999977766,
+            "p95": 0.8429319999992799,
+            "p99": 0.9392009999987181,
+            "max": 1.4595929999989607
+          }
+        },
+        "requests": 960,
+        "admissionCheck": {
+          "admission_mean_ms": 0.0006244843749919626,
+          "admission_p95_bucket_ms": [
+            0.0008799000000000001,
+            0.001
+          ],
+          "gap_after_socket_mean_ms": 0.633398711458287,
+          "gap_mean_ms": 0.8576402125001367,
+          "requests": 960,
+          "residual_mean_ms_vs_gap": 0.8570157281251447,
+          "residual_mean_ms_vs_gap_after_socket": 0.632774227083295,
+          "site_count_delta": 960.0,
+          "site_count_matches_requests": true,
+          "status": "present"
+        }
+      },
+      {
+        "cell": "g1-postgres-c5a-4",
+        "engine": "postgres",
+        "fixtureDocuments": 3000,
+        "companies": 3,
+        "seconds": 120,
+        "messagesPerMinute": 240,
+        "asyncDelayMs": 500,
+        "backendCpus": 2,
+        "statsMs": {
+          "totalMs": {
+            "p50": 1648.8909239999994,
+            "p95": 2664.853633000006,
+            "p99": 2755.5780950000044,
+            "max": 2829.8523489999934
+          },
+          "headMs": {
+            "p50": 1648.7552510000023,
+            "p95": 2664.791497000013,
+            "p99": 2755.4802920000075,
+            "max": 2829.7546469999943
+          },
+          "handlerLogMs": {
+            "p50": 509.21,
+            "p95": 511.68,
+            "p99": 513.466,
+            "max": 515.233
+          },
+          "gapMs": {
+            "p50": 1139.7897380000027,
+            "p95": 2155.2232780000127,
+            "p99": 2246.3120950000043,
+            "max": 2321.0543489999936
+          },
+          "headerGapMs": {
+            "p50": 1139.6093209999995,
+            "p95": 2155.0704120000087,
+            "p99": 2246.2142920000074,
+            "max": 2320.9566469999945
+          },
+          "siteGapMs": {
+            "p50": 1139.7897380000027,
+            "p95": 2155.2232780000127,
+            "p99": 2246.3120950000043,
+            "max": 2321.0543489999936
+          },
+          "dispatchLagMs": {
+            "p50": -0.25761400000010326,
+            "p95": 0.2735079999984009,
+            "p99": 0.3883780000032857,
+            "max": 1.20670999999993
+          },
+          "socketWaitMs": {
+            "p50": 0.203429999999571,
+            "p95": 0.34459200000128476,
+            "p99": 0.41213900000730064,
+            "max": 0.8426419999887003
+          },
+          "gapAfterSocketMs": {
+            "p50": 1139.590126000006,
+            "p95": 2155.0337540000114,
+            "p99": 2246.156906000007,
+            "max": 2320.820051999991
+          }
+        },
+        "requests": 960,
+        "admissionCheck": {
+          "admission_mean_ms": 1143.7665483624999,
+          "admission_p95_bucket_ms": [
+            1896.0,
+            2154.0
+          ],
+          "gap_after_socket_mean_ms": 1144.3939107677081,
+          "gap_mean_ms": 1144.600530625,
+          "requests": 960,
+          "residual_mean_ms_vs_gap": 0.8339822625000579,
+          "residual_mean_ms_vs_gap_after_socket": 0.6273624052082596,
+          "site_count_delta": 960.0,
+          "site_count_matches_requests": true,
+          "status": "present"
+        }
+      },
+      {
+        "cell": "g1-sqlite-c4-16",
+        "engine": "sqlite",
+        "fixtureDocuments": 3000,
+        "companies": 3,
+        "seconds": 120,
+        "messagesPerMinute": 240,
+        "asyncDelayMs": 500,
+        "backendCpus": 2,
+        "statsMs": {
+          "totalMs": {
+            "p50": 508.6193379999895,
+            "p95": 510.98877099998936,
+            "p99": 512.5947190000006,
+            "max": 513.9208320000034
+          },
+          "headMs": {
+            "p50": 508.5120079999979,
+            "p95": 510.8789259999903,
+            "p99": 512.5391999999993,
+            "max": 513.8053159999981
+          },
+          "handlerLogMs": {
+            "p50": 507.844,
+            "p95": 510.118,
+            "p99": 511.691,
+            "max": 512.958
+          },
+          "gapMs": {
+            "p50": 0.7872450000004392,
+            "p95": 1.0454250000012166,
+            "p99": 1.2252400000002694,
+            "max": 1.8859149999980787
+          },
+          "headerGapMs": {
+            "p50": 0.6667789999984848,
+            "p95": 0.8725809999999683,
+            "p99": 1.0562900000002742,
+            "max": 1.4512439999990079
+          },
+          "siteGapMs": {
+            "p50": 0.7872450000004392,
+            "p95": 1.0454250000012166,
+            "p99": 1.2252400000002694,
+            "max": 1.8859149999980787
+          },
+          "dispatchLagMs": {
+            "p50": -0.21110200000111945,
+            "p95": 0.6331590000045253,
+            "p99": 0.7242419999965932,
+            "max": 1.104231000000027
+          },
+          "socketWaitMs": {
+            "p50": 0.2063250000064727,
+            "p95": 0.30551000000559725,
+            "p99": 0.4130910000021686,
+            "max": 0.5794519999981276
+          },
+          "gapAfterSocketMs": {
+            "p50": 0.5766530000008743,
+            "p95": 0.785665999987998,
+            "p99": 0.9035200000047894,
+            "max": 1.6246579999997834
+          }
+        },
+        "requests": 960,
+        "admissionCheck": {
+          "note": "no http_admission_wait_seconds in dumps",
+          "status": "absent"
+        }
+      },
+      {
+        "cell": "g1-sqlite-c5a-16",
+        "engine": "sqlite",
+        "fixtureDocuments": 3000,
+        "companies": 3,
+        "seconds": 120,
+        "messagesPerMinute": 240,
+        "asyncDelayMs": 500,
+        "backendCpus": 2,
+        "statsMs": {
+          "totalMs": {
+            "p50": 508.92901999999594,
+            "p95": 511.26473700000497,
+            "p99": 512.4772409999987,
+            "max": 515.7526830000006
+          },
+          "headMs": {
+            "p50": 508.8072020000036,
+            "p95": 511.1230429999996,
+            "p99": 512.3217450000084,
+            "max": 515.6975899999998
+          },
+          "handlerLogMs": {
+            "p50": 508.096,
+            "p95": 510.405,
+            "p99": 511.535,
+            "max": 514.563
+          },
+          "gapMs": {
+            "p50": 0.8118690000023889,
+            "p95": 1.0823069999995596,
+            "p99": 1.243366000004869,
+            "max": 1.7213879999991377
+          },
+          "headerGapMs": {
+            "p50": 0.6911979999996447,
+            "p95": 0.9129720000063912,
+            "p99": 1.0860689999996112,
+            "max": 1.3303239999989387
+          },
+          "siteGapMs": {
+            "p50": 0.8118690000023889,
+            "p95": 1.0823069999995596,
+            "p99": 1.243366000004869,
+            "max": 1.7213879999991377
+          },
+          "dispatchLagMs": {
+            "p50": -0.32950399999390356,
+            "p95": 0.7900809999991907,
+            "p99": 0.9844250000023749,
+            "max": 1.208898999999974
+          },
+          "socketWaitMs": {
+            "p50": 0.20618600001034793,
+            "p95": 0.31158200000209035,
+            "p99": 0.3936459999999897,
+            "max": 0.8283979999978328
+          },
+          "gapAfterSocketMs": {
+            "p50": 0.601515999998071,
+            "p95": 0.8240649999933112,
+            "p99": 0.9497300000001019,
+            "max": 1.460050000000706
+          }
+        },
+        "requests": 960,
+        "admissionCheck": {
+          "admission_mean_ms": 0.000608535416660172,
+          "admission_p95_bucket_ms": [
+            0.0008799000000000001,
+            0.001
+          ],
+          "gap_after_socket_mean_ms": 0.6031007343749513,
+          "gap_mean_ms": 0.8117217302084183,
+          "requests": 960,
+          "residual_mean_ms_vs_gap": 0.8111131947917581,
+          "residual_mean_ms_vs_gap_after_socket": 0.6024921989582911,
+          "site_count_delta": 960.0,
+          "site_count_matches_requests": true,
+          "status": "present"
+        }
+      },
+      {
+        "cell": "g1-sqlite-c5a-4",
+        "engine": "sqlite",
+        "fixtureDocuments": 3000,
+        "companies": 3,
+        "seconds": 120,
+        "messagesPerMinute": 240,
+        "asyncDelayMs": 500,
+        "backendCpus": 2,
+        "statsMs": {
+          "totalMs": {
+            "p50": 1554.9774849999958,
+            "p95": 2583.0313199999946,
+            "p99": 2695.6699579999986,
+            "max": 2739.6989389999944
+          },
+          "headMs": {
+            "p50": 1554.7626279999968,
+            "p95": 2582.8278890000074,
+            "p99": 2695.4344379999966,
+            "max": 2739.4564059999975
+          },
+          "handlerLogMs": {
+            "p50": 508.787,
+            "p95": 512.401,
+            "p99": 515.419,
+            "max": 517.803
+          },
+          "gapMs": {
+            "p50": 1047.3304849999959,
+            "p95": 2071.524128999996,
+            "p99": 2184.4599579999986,
+            "max": 2228.2729389999945
+          },
+          "headerGapMs": {
+            "p50": 1047.2257489999947,
+            "p95": 2071.3749910000024,
+            "p99": 2184.2244379999966,
+            "max": 2228.0304059999976
+          },
+          "siteGapMs": {
+            "p50": 1047.3304849999959,
+            "p95": 2071.524128999996,
+            "p99": 2184.4599579999986,
+            "max": 2228.2729389999945
+          },
+          "dispatchLagMs": {
+            "p50": -0.16781600000103936,
+            "p95": 0.4659879999962868,
+            "p99": 0.56322899999941,
+            "max": 3.475575000004028
+          },
+          "socketWaitMs": {
+            "p50": 0.21730699999898206,
+            "p95": 0.3871439999929862,
+            "p99": 0.4743259999959264,
+            "max": 0.642360000001645
+          },
+          "gapAfterSocketMs": {
+            "p50": 1047.1153729999978,
+            "p95": 2071.0387709999904,
+            "p99": 2184.09232100001,
+            "max": 2228.047517999999
+          }
+        },
+        "requests": 960,
+        "admissionCheck": {
+          "admission_mean_ms": 1065.5282820260416,
+          "admission_p95_bucket_ms": [
+            1896.0,
+            2154.0
+          ],
+          "gap_after_socket_mean_ms": 1066.219031828125,
+          "gap_mean_ms": 1066.4510029572914,
+          "requests": 960,
+          "residual_mean_ms_vs_gap": 0.9227209312498417,
+          "residual_mean_ms_vs_gap_after_socket": 0.6907498020834737,
+          "site_count_delta": 960.0,
+          "site_count_matches_requests": true,
+          "status": "present"
+        }
+      }
+    ],
+    "batching": {
+      "allCorrectnessChecksPassed": true,
+      "cells": [
+        {
+          "cell": "batch-1-default",
+          "profile": "default",
+          "batchOptions": {},
+          "statsMs": {
+            "totalMs": {
+              "p50": 37151.58126899999,
+              "p95": 62249.330392,
+              "p99": 64230.272102999996,
+              "max": 64784.858156
+            },
+            "headMs": {
+              "p50": 37151.551489000005,
+              "p95": 62248.97883000001,
+              "p99": 64230.10598200001,
+              "max": 64784.598304000014
+            },
+            "handlerLogMs": {
+              "p50": 510.295,
+              "p95": 908.082,
+              "p99": 985.187,
+              "max": 1089.383
+            },
+            "gapMs": {
+              "p50": 36542.480239,
+              "p95": 61687.146663999985,
+              "p99": 63699.674788,
+              "max": 64173.60716799999
+            },
+            "headerGapMs": {
+              "p50": 36542.10377700001,
+              "p95": 61687.02679300001,
+              "p99": 63699.50276700002,
+              "max": 64173.488217999984
+            },
+            "siteGapMs": {
+              "p50": 36542.480239,
+              "p95": 61687.146663999985,
+              "p99": 63699.674788,
+              "max": 64173.60716799999
+            },
+            "dispatchLagMs": {
+              "p50": -0.31828399999358226,
+              "p95": 0.6490029999986291,
+              "p99": 1.8209790000109933,
+              "max": 77.07809700000507
+            },
+            "socketWaitMs": {
+              "p50": 32476.81171700002,
+              "p95": 57936.229219,
+              "p99": 59887.072503,
+              "max": 60403.61103999999
+            },
+            "gapAfterSocketMs": {
+              "p50": 4018.6015620000107,
+              "p95": 4909.967949000009,
+              "p99": 5071.054511999997,
+              "max": 5164.234257000011
+            }
+          },
+          "drainSeconds": 64.624702498,
+          "pendingAtStop": 7507,
+          "writeBatches": {
+            "database_write_batch_commits": {
+              "count": 13690.0,
+              "sum": 20000.0,
+              "mean": 1.4609203798392987,
+              "unit": "commits"
+            },
+            "database_write_batch_documents": {
+              "count": 13690.0,
+              "sum": 1220000.0,
+              "mean": 89.11614317019722,
+              "unit": "documents"
+            },
+            "database_write_batch_bytes": {
+              "count": 13690.0,
+              "sum": 866276000.0,
+              "mean": 63278.01314828342,
+              "unit": "bytes"
+            }
+          },
+          "latencyHistograms": {
+            "database_commit_client_seconds": {
+              "{\"identity\": \"instance_admin\"}": {
+                "labels": {
+                  "identity": "instance_admin"
+                },
+                "count_delta": 0.0,
+                "bucket_count_delta": 0,
+                "sum_delta_seconds": 0.0,
+                "mean_seconds": null,
+                "percentile_buckets_seconds": {
+                  "p50": null,
+                  "p95": null,
+                  "p99": null
+                },
+                "max_bucket_hi_seconds": null
+              },
+              "{\"identity\": \"system\"}": {
+                "labels": {
+                  "identity": "system"
+                },
+                "count_delta": 20.0,
+                "bucket_count_delta": 20.0,
+                "sum_delta_seconds": 0.0034456350000000094,
+                "mean_seconds": 0.00017228175000000046,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 5.995e-05,
+                    "bucket_hi": 6.813e-05
+                  },
+                  "p95": {
+                    "bucket_lo": 0.0002154,
+                    "bucket_hi": 0.0002448
+                  },
+                  "p99": {
+                    "bucket_lo": 0.002154,
+                    "bucket_hi": 0.002448
+                  }
+                },
+                "max_bucket_hi_seconds": 0.002448
+              },
+              "{\"identity\": \"unknown\"}": {
+                "labels": {
+                  "identity": "unknown"
+                },
+                "count_delta": 30000.0,
+                "bucket_count_delta": 30000.0,
+                "sum_delta_seconds": 2663.329418738998,
+                "mean_seconds": 0.08877764729129993,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.08799,
+                    "bucket_hi": 0.1
+                  },
+                  "p95": {
+                    "bucket_lo": 0.1292,
+                    "bucket_hi": 0.1468
+                  },
+                  "p99": {
+                    "bucket_lo": 0.1292,
+                    "bucket_hi": 0.1468
+                  }
+                },
+                "max_bucket_hi_seconds": 0.2154
+              }
+            },
+            "database_commit_seconds": {
+              "{\"status\": \"error\"}": {
+                "labels": {
+                  "status": "error"
+                },
+                "count_delta": 10000.0,
+                "bucket_count_delta": 10000.0,
+                "sum_delta_seconds": 2.846027361000012,
+                "mean_seconds": 0.0002846027361000012,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.0002448,
+                    "bucket_hi": 0.0002783
+                  },
+                  "p95": {
+                    "bucket_lo": 0.0005275,
+                    "bucket_hi": 0.0005995
+                  },
+                  "p99": {
+                    "bucket_lo": 0.001,
+                    "bucket_hi": 0.001136
+                  }
+                },
+                "max_bucket_hi_seconds": 0.002783
+              },
+              "{\"status\": \"success\"}": {
+                "labels": {
+                  "status": "success"
+                },
+                "count_delta": 20000.0,
+                "bucket_count_delta": 20000.0,
+                "sum_delta_seconds": 1095.2880471810035,
+                "mean_seconds": 0.054764402359050175,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.05275,
+                    "bucket_hi": 0.05995
+                  },
+                  "p95": {
+                    "bucket_lo": 0.07743,
+                    "bucket_hi": 0.08799
+                  },
+                  "p99": {
+                    "bucket_lo": 0.08799,
+                    "bucket_hi": 0.1
+                  }
+                },
+                "max_bucket_hi_seconds": 0.1468
+              }
+            },
+            "database_commit_queue_seconds": {
+              "{}": {
+                "labels": {},
+                "count_delta": 30020.0,
+                "bucket_count_delta": 30020.0,
+                "sum_delta_seconds": 62.97233341800007,
+                "mean_seconds": 0.002097679327714859,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.001668,
+                    "bucket_hi": 0.001896
+                  },
+                  "p95": {
+                    "bucket_lo": 0.004084,
+                    "bucket_hi": 0.004642
+                  },
+                  "p99": {
+                    "bucket_lo": 0.005995,
+                    "bucket_hi": 0.006813
+                  }
+                },
+                "max_bucket_hi_seconds": 0.01896
+              }
+            },
+            "database_commit_persistence_write_seconds": {
+              "{\"status\": \"success\"}": {
+                "labels": {
+                  "status": "success"
+                },
+                "count_delta": 13690.0,
+                "bucket_count_delta": 13690.0,
+                "sum_delta_seconds": 692.2310511039998,
+                "mean_seconds": 0.05056472250577062,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.04642,
+                    "bucket_hi": 0.05275
+                  },
+                  "p95": {
+                    "bucket_lo": 0.07743,
+                    "bucket_hi": 0.08799
+                  },
+                  "p99": {
+                    "bucket_lo": 0.08799,
+                    "bucket_hi": 0.1
+                  }
+                },
+                "max_bucket_hi_seconds": 0.1468
+              }
+            },
+            "sqlite_permit_wait_seconds": {
+              "{\"flavor\": \"multi\", \"op\": \"delete\"}": {
+                "labels": {
+                  "flavor": "multi",
+                  "op": "delete"
+                },
+                "count_delta": 1.0,
+                "bucket_count_delta": 1.0,
+                "sum_delta_seconds": 0.024739413,
+                "mean_seconds": 0.024739413,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.02448,
+                    "bucket_hi": 0.02783
+                  },
+                  "p95": {
+                    "bucket_lo": 0.02448,
+                    "bucket_hi": 0.02783
+                  },
+                  "p99": {
+                    "bucket_lo": 0.02448,
+                    "bucket_hi": 0.02783
+                  }
+                },
+                "max_bucket_hi_seconds": 0.02783
+              },
+              "{\"flavor\": \"multi\", \"op\": \"globals\"}": {
+                "labels": {
+                  "flavor": "multi",
+                  "op": "globals"
+                },
+                "count_delta": 102.0,
+                "bucket_count_delta": 102.0,
+                "sum_delta_seconds": 4.423427028,
+                "mean_seconds": 0.04336693164705882,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.04084,
+                    "bucket_hi": 0.04642
+                  },
+                  "p95": {
+                    "bucket_lo": 0.06813,
+                    "bucket_hi": 0.07743
+                  },
+                  "p99": {
+                    "bucket_lo": 0.07743,
+                    "bucket_hi": 0.08799
+                  }
+                },
+                "max_bucket_hi_seconds": 0.08799
+              },
+              "{\"flavor\": \"multi\", \"op\": \"index_scan\"}": {
+                "labels": {
+                  "flavor": "multi",
+                  "op": "index_scan"
+                },
+                "count_delta": 60004.0,
+                "bucket_count_delta": 60004.0,
+                "sum_delta_seconds": 2597.1285245329755,
+                "mean_seconds": 0.0432825899028894,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.04084,
+                    "bucket_hi": 0.04642
+                  },
+                  "p95": {
+                    "bucket_lo": 0.06813,
+                    "bucket_hi": 0.07743
+                  },
+                  "p99": {
+                    "bucket_lo": 0.07743,
+                    "bucket_hi": 0.08799
+                  }
+                },
+                "max_bucket_hi_seconds": 0.1468
+              },
+              "{\"flavor\": \"multi\", \"op\": \"load_documents\"}": {
+                "labels": {
+                  "flavor": "multi",
+                  "op": "load_documents"
+                },
+                "count_delta": 3100.0,
+                "bucket_count_delta": 3100.0,
+                "sum_delta_seconds": 136.67693987399994,
+                "mean_seconds": 0.04408933544322579,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.04084,
+                    "bucket_hi": 0.04642
+                  },
+                  "p95": {
+                    "bucket_lo": 0.06813,
+                    "bucket_hi": 0.07743
+                  },
+                  "p99": {
+                    "bucket_lo": 0.07743,
+                    "bucket_hi": 0.08799
+                  }
+                },
+                "max_bucket_hi_seconds": 0.1136
+              },
+              "{\"flavor\": \"multi\", \"op\": \"previous_revisions\"}": {
+                "labels": {
+                  "flavor": "multi",
+                  "op": "previous_revisions"
+                },
+                "count_delta": 30598.0,
+                "bucket_count_delta": 30598.0,
+                "sum_delta_seconds": 1499.3747568019999,
+                "mean_seconds": 0.04900237782868161,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.04642,
+                    "bucket_hi": 0.05275
+                  },
+                  "p95": {
+                    "bucket_lo": 0.06813,
+                    "bucket_hi": 0.07743
+                  },
+                  "p99": {
+                    "bucket_lo": 0.07743,
+                    "bucket_hi": 0.08799
+                  }
+                },
+                "max_bucket_hi_seconds": 0.1468
+              },
+              "{\"flavor\": \"multi\", \"op\": \"write\"}": {
+                "labels": {
+                  "flavor": "multi",
+                  "op": "write"
+                },
+                "count_delta": 13690.0,
+                "bucket_count_delta": 13690.0,
+                "sum_delta_seconds": 586.126810430002,
+                "mean_seconds": 0.042814230126369764,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.04084,
+                    "bucket_hi": 0.04642
+                  },
+                  "p95": {
+                    "bucket_lo": 0.06813,
+                    "bucket_hi": 0.07743
+                  },
+                  "p99": {
+                    "bucket_lo": 0.07743,
+                    "bucket_hi": 0.08799
+                  }
+                },
+                "max_bucket_hi_seconds": 0.1468
+              }
+            },
+            "sqlite_lock_hold_seconds": {
+              "{\"op\": \"delete\"}": {
+                "labels": {
+                  "op": "delete"
+                },
+                "count_delta": 1.0,
+                "bucket_count_delta": 1.0,
+                "sum_delta_seconds": 0.000669423,
+                "mean_seconds": 0.000669423,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.0005995,
+                    "bucket_hi": 0.0006813
+                  },
+                  "p95": {
+                    "bucket_lo": 0.0005995,
+                    "bucket_hi": 0.0006813
+                  },
+                  "p99": {
+                    "bucket_lo": 0.0005995,
+                    "bucket_hi": 0.0006813
+                  }
+                },
+                "max_bucket_hi_seconds": 0.0006813
+              },
+              "{\"op\": \"globals\"}": {
+                "labels": {
+                  "op": "globals"
+                },
+                "count_delta": 102.0,
+                "bucket_count_delta": 102.0,
+                "sum_delta_seconds": 0.05597641599999997,
+                "mean_seconds": 0.0005487883921568625,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.0005275,
+                    "bucket_hi": 0.0005995
+                  },
+                  "p95": {
+                    "bucket_lo": 0.001292,
+                    "bucket_hi": 0.001468
+                  },
+                  "p99": {
+                    "bucket_lo": 0.001896,
+                    "bucket_hi": 0.002154
+                  }
+                },
+                "max_bucket_hi_seconds": 0.003162
+              },
+              "{\"op\": \"index_scan\"}": {
+                "labels": {
+                  "op": "index_scan"
+                },
+                "count_delta": 60004.0,
+                "bucket_count_delta": 60004.0,
+                "sum_delta_seconds": 47.89544598800049,
+                "mean_seconds": 0.0007982042195187069,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.0007743,
+                    "bucket_hi": 0.0008799
+                  },
+                  "p95": {
+                    "bucket_lo": 0.001468,
+                    "bucket_hi": 0.001668
+                  },
+                  "p99": {
+                    "bucket_lo": 0.002154,
+                    "bucket_hi": 0.002448
+                  }
+                },
+                "max_bucket_hi_seconds": 0.007743
+              },
+              "{\"op\": \"load_documents\"}": {
+                "labels": {
+                  "op": "load_documents"
+                },
+                "count_delta": 3100.0,
+                "bucket_count_delta": 3100.0,
+                "sum_delta_seconds": 2.044685773000011,
+                "mean_seconds": 0.0006595760558064552,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.0005995,
+                    "bucket_hi": 0.0006813
+                  },
+                  "p95": {
+                    "bucket_lo": 0.0008799,
+                    "bucket_hi": 0.001
+                  },
+                  "p99": {
+                    "bucket_lo": 0.001292,
+                    "bucket_hi": 0.001468
+                  }
+                },
+                "max_bucket_hi_seconds": 0.005275
+              },
+              "{\"op\": \"previous_revisions\"}": {
+                "labels": {
+                  "op": "previous_revisions"
+                },
+                "count_delta": 30598.0,
+                "bucket_count_delta": 30598.0,
+                "sum_delta_seconds": 14.645335552000018,
+                "mean_seconds": 0.00047863702045885414,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.0004084,
+                    "bucket_hi": 0.0004642
+                  },
+                  "p95": {
+                    "bucket_lo": 0.0006813,
+                    "bucket_hi": 0.0007743
+                  },
+                  "p99": {
+                    "bucket_lo": 0.001,
+                    "bucket_hi": 0.001136
+                  }
+                },
+                "max_bucket_hi_seconds": 0.005995
+              },
+              "{\"op\": \"write\"}": {
+                "labels": {
+                  "op": "write"
+                },
+                "count_delta": 13690.0,
+                "bucket_count_delta": 13690.0,
+                "sum_delta_seconds": 104.91129783500031,
+                "mean_seconds": 0.007663352654127123,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.005275,
+                    "bucket_hi": 0.005995
+                  },
+                  "p95": {
+                    "bucket_lo": 0.01668,
+                    "bucket_hi": 0.01896
+                  },
+                  "p99": {
+                    "bucket_lo": 0.01896,
+                    "bucket_hi": 0.02154
+                  }
+                },
+                "max_bucket_hi_seconds": 0.07743
+              }
+            }
+          },
+          "occRetries": 10000.0,
+          "reportedOccErrors": 10000.0,
+          "resources": {
+            "cell": "batch-1-default",
+            "drainSeconds": 64.624702498,
+            "cpuMeanPercent": 402.734,
+            "cpuPeakPercent": 447.82,
+            "cpuSamples": 45,
+            "runtimeBusySeconds": 133.674362211,
+            "holdSeconds": 169.55341098700083,
+            "spanSeconds": 184.619,
+            "residualMeanMs": 1.0470874158504557,
+            "gapAfterSocketP95Ms": 4909.967949000009,
+            "gapAfterSocketP99Ms": 5071.054511999997
+          },
+          "correctness": {
+            "acceptedUniqueCompletedAndAfterReopen": 20000,
+            "companies": 100,
+            "perCompany": 200,
+            "requestErrors": 0,
+            "oom": false,
+            "quickCheck": "ok",
+            "containersRemaining": 0
+          }
+        },
+        {
+          "cell": "batch-2-256docs",
+          "profile": "256docs",
+          "batchOptions": {
+            "COMMITTER_MAX_WRITE_BATCH_DOCUMENTS": "256",
+            "COMMITTER_MAX_WRITE_BATCH_BYTES": "262144"
+          },
+          "statsMs": {
+            "totalMs": {
+              "p50": 10440.314098999996,
+              "p95": 26142.74348199999,
+              "p99": 27737.561047999974,
+              "max": 28280.961358
+            },
+            "headMs": {
+              "p50": 10440.277348999996,
+              "p95": 26142.651072000008,
+              "p99": 27737.450308,
+              "max": 28280.946217999997
+            },
+            "handlerLogMs": {
+              "p50": 367.38,
+              "p95": 741.182,
+              "p99": 831.011,
+              "max": 950.522
+            },
+            "gapMs": {
+              "p50": 9792.945875000012,
+              "p95": 25666.50793600001,
+              "p99": 27214.16208400002,
+              "max": 27644.261869999984
+            },
+            "headerGapMs": {
+              "p50": 9792.844095,
+              "p95": 25666.493686,
+              "p99": 27214.10325300002,
+              "max": 27644.223859999995
+            },
+            "siteGapMs": {
+              "p50": 9792.945875000012,
+              "p95": 25666.50793600001,
+              "p99": 27214.16208400002,
+              "max": 27644.261869999984
+            },
+            "dispatchLagMs": {
+              "p50": -0.3513550000207033,
+              "p95": 0.5116609999968205,
+              "p99": 0.7721769999916432,
+              "max": 84.30691200000001
+            },
+            "socketWaitMs": {
+              "p50": 5774.418067999999,
+              "p95": 22203.816613000003,
+              "p99": 23517.522656000016,
+              "max": 24049.91562700001
+            },
+            "gapAfterSocketMs": {
+              "p50": 3289.8447310000074,
+              "p95": 4035.780266999993,
+              "p99": 4195.818886000001,
+              "max": 4304.747644999994
+            }
+          },
+          "drainSeconds": 28.098044714999997,
+          "pendingAtStop": 3812,
+          "writeBatches": {
+            "database_write_batch_commits": {
+              "count": 11354.0,
+              "sum": 20000.0,
+              "mean": 1.7614937466971992,
+              "unit": "commits"
+            },
+            "database_write_batch_documents": {
+              "count": 11354.0,
+              "sum": 1220000.0,
+              "mean": 107.45111854852915,
+              "unit": "documents"
+            },
+            "database_write_batch_bytes": {
+              "count": 11354.0,
+              "sum": 866276000.0,
+              "mean": 76296.98784569315,
+              "unit": "bytes"
+            }
+          },
+          "latencyHistograms": {
+            "database_commit_client_seconds": {
+              "{\"identity\": \"instance_admin\"}": {
+                "labels": {
+                  "identity": "instance_admin"
+                },
+                "count_delta": 0.0,
+                "bucket_count_delta": 0,
+                "sum_delta_seconds": 0.0,
+                "mean_seconds": null,
+                "percentile_buckets_seconds": {
+                  "p50": null,
+                  "p95": null,
+                  "p99": null
+                },
+                "max_bucket_hi_seconds": null
+              },
+              "{\"identity\": \"system\"}": {
+                "labels": {
+                  "identity": "system"
+                },
+                "count_delta": 14.0,
+                "bucket_count_delta": 14.0,
+                "sum_delta_seconds": 0.0008817930000000057,
+                "mean_seconds": 6.29852142857147e-05,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 4.084e-05,
+                    "bucket_hi": 4.642e-05
+                  },
+                  "p95": {
+                    "bucket_lo": 0.0002783,
+                    "bucket_hi": 0.0003162
+                  },
+                  "p99": {
+                    "bucket_lo": 0.0002783,
+                    "bucket_hi": 0.0003162
+                  }
+                },
+                "max_bucket_hi_seconds": 0.0003162
+              },
+              "{\"identity\": \"unknown\"}": {
+                "labels": {
+                  "identity": "unknown"
+                },
+                "count_delta": 30000.0,
+                "bucket_count_delta": 30000.0,
+                "sum_delta_seconds": 2207.0103363769804,
+                "mean_seconds": 0.07356701121256601,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.07743,
+                    "bucket_hi": 0.08799
+                  },
+                  "p95": {
+                    "bucket_lo": 0.1136,
+                    "bucket_hi": 0.1292
+                  },
+                  "p99": {
+                    "bucket_lo": 0.1292,
+                    "bucket_hi": 0.1468
+                  }
+                },
+                "max_bucket_hi_seconds": 0.3162
+              }
+            },
+            "database_commit_seconds": {
+              "{\"status\": \"error\"}": {
+                "labels": {
+                  "status": "error"
+                },
+                "count_delta": 10000.0,
+                "bucket_count_delta": 10000.0,
+                "sum_delta_seconds": 2.1276777639999978,
+                "mean_seconds": 0.00021276777639999978,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.0001896,
+                    "bucket_hi": 0.0002154
+                  },
+                  "p95": {
+                    "bucket_lo": 0.0003594,
+                    "bucket_hi": 0.0004084
+                  },
+                  "p99": {
+                    "bucket_lo": 0.0005275,
+                    "bucket_hi": 0.0005995
+                  }
+                },
+                "max_bucket_hi_seconds": 0.003594
+              },
+              "{\"status\": \"success\"}": {
+                "labels": {
+                  "status": "success"
+                },
+                "count_delta": 20000.0,
+                "bucket_count_delta": 20000.0,
+                "sum_delta_seconds": 903.452192442,
+                "mean_seconds": 0.0451726096221,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.04084,
+                    "bucket_hi": 0.04642
+                  },
+                  "p95": {
+                    "bucket_lo": 0.06813,
+                    "bucket_hi": 0.07743
+                  },
+                  "p99": {
+                    "bucket_lo": 0.08799,
+                    "bucket_hi": 0.1
+                  }
+                },
+                "max_bucket_hi_seconds": 0.2154
+              }
+            },
+            "database_commit_queue_seconds": {
+              "{}": {
+                "labels": {},
+                "count_delta": 30014.0,
+                "bucket_count_delta": 30014.0,
+                "sum_delta_seconds": 49.7586734379994,
+                "mean_seconds": 0.0016578487851669022,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.001292,
+                    "bucket_hi": 0.001468
+                  },
+                  "p95": {
+                    "bucket_lo": 0.003594,
+                    "bucket_hi": 0.004084
+                  },
+                  "p99": {
+                    "bucket_lo": 0.004642,
+                    "bucket_hi": 0.005275
+                  }
+                },
+                "max_bucket_hi_seconds": 0.01136
+              }
+            },
+            "database_commit_persistence_write_seconds": {
+              "{\"status\": \"success\"}": {
+                "labels": {
+                  "status": "success"
+                },
+                "count_delta": 11354.0,
+                "bucket_count_delta": 11354.0,
+                "sum_delta_seconds": 453.10093922900023,
+                "mean_seconds": 0.03990672355372558,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.03594,
+                    "bucket_hi": 0.04084
+                  },
+                  "p95": {
+                    "bucket_lo": 0.06813,
+                    "bucket_hi": 0.07743
+                  },
+                  "p99": {
+                    "bucket_lo": 0.07743,
+                    "bucket_hi": 0.08799
+                  }
+                },
+                "max_bucket_hi_seconds": 0.2154
+              }
+            },
+            "sqlite_permit_wait_seconds": {
+              "{\"flavor\": \"multi\", \"op\": \"globals\"}": {
+                "labels": {
+                  "flavor": "multi",
+                  "op": "globals"
+                },
+                "count_delta": 82.0,
+                "bucket_count_delta": 82.0,
+                "sum_delta_seconds": 2.7849943600000007,
+                "mean_seconds": 0.033963345853658546,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.03162,
+                    "bucket_hi": 0.03594
+                  },
+                  "p95": {
+                    "bucket_lo": 0.05995,
+                    "bucket_hi": 0.06813
+                  },
+                  "p99": {
+                    "bucket_lo": 0.05995,
+                    "bucket_hi": 0.06813
+                  }
+                },
+                "max_bucket_hi_seconds": 0.06813
+              },
+              "{\"flavor\": \"multi\", \"op\": \"index_scan\"}": {
+                "labels": {
+                  "flavor": "multi",
+                  "op": "index_scan"
+                },
+                "count_delta": 60004.0,
+                "bucket_count_delta": 60004.0,
+                "sum_delta_seconds": 2002.113020300023,
+                "mean_seconds": 0.03336632591660594,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.03162,
+                    "bucket_hi": 0.03594
+                  },
+                  "p95": {
+                    "bucket_lo": 0.05995,
+                    "bucket_hi": 0.06813
+                  },
+                  "p99": {
+                    "bucket_lo": 0.06813,
+                    "bucket_hi": 0.07743
+                  }
+                },
+                "max_bucket_hi_seconds": 0.1896
+              },
+              "{\"flavor\": \"multi\", \"op\": \"load_documents\"}": {
+                "labels": {
+                  "flavor": "multi",
+                  "op": "load_documents"
+                },
+                "count_delta": 3415.0,
+                "bucket_count_delta": 3415.0,
+                "sum_delta_seconds": 109.94137107300013,
+                "mean_seconds": 0.032193666492825804,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.03162,
+                    "bucket_hi": 0.03594
+                  },
+                  "p95": {
+                    "bucket_lo": 0.05995,
+                    "bucket_hi": 0.06813
+                  },
+                  "p99": {
+                    "bucket_lo": 0.06813,
+                    "bucket_hi": 0.07743
+                  }
+                },
+                "max_bucket_hi_seconds": 0.1468
+              },
+              "{\"flavor\": \"multi\", \"op\": \"previous_revisions\"}": {
+                "labels": {
+                  "flavor": "multi",
+                  "op": "previous_revisions"
+                },
+                "count_delta": 30661.0,
+                "bucket_count_delta": 30661.0,
+                "sum_delta_seconds": 1251.8774057450037,
+                "mean_seconds": 0.04082963392404043,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.03594,
+                    "bucket_hi": 0.04084
+                  },
+                  "p95": {
+                    "bucket_lo": 0.05995,
+                    "bucket_hi": 0.06813
+                  },
+                  "p99": {
+                    "bucket_lo": 0.07743,
+                    "bucket_hi": 0.08799
+                  }
+                },
+                "max_bucket_hi_seconds": 0.1896
+              },
+              "{\"flavor\": \"multi\", \"op\": \"write\"}": {
+                "labels": {
+                  "flavor": "multi",
+                  "op": "write"
+                },
+                "count_delta": 11354.0,
+                "bucket_count_delta": 11354.0,
+                "sum_delta_seconds": 364.5462008959976,
+                "mean_seconds": 0.03210729266302603,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.02783,
+                    "bucket_hi": 0.03162
+                  },
+                  "p95": {
+                    "bucket_lo": 0.05995,
+                    "bucket_hi": 0.06813
+                  },
+                  "p99": {
+                    "bucket_lo": 0.06813,
+                    "bucket_hi": 0.07743
+                  }
+                },
+                "max_bucket_hi_seconds": 0.1468
+              }
+            },
+            "sqlite_lock_hold_seconds": {
+              "{\"op\": \"globals\"}": {
+                "labels": {
+                  "op": "globals"
+                },
+                "count_delta": 82.0,
+                "bucket_count_delta": 82.0,
+                "sum_delta_seconds": 0.03082844200000001,
+                "mean_seconds": 0.0003759566097560977,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.0004084,
+                    "bucket_hi": 0.0004642
+                  },
+                  "p95": {
+                    "bucket_lo": 0.0007743,
+                    "bucket_hi": 0.0008799
+                  },
+                  "p99": {
+                    "bucket_lo": 0.001292,
+                    "bucket_hi": 0.001468
+                  }
+                },
+                "max_bucket_hi_seconds": 0.001468
+              },
+              "{\"op\": \"index_scan\"}": {
+                "labels": {
+                  "op": "index_scan"
+                },
+                "count_delta": 60004.0,
+                "bucket_count_delta": 60004.0,
+                "sum_delta_seconds": 39.356303711000066,
+                "mean_seconds": 0.0006558946688720763,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.0005275,
+                    "bucket_hi": 0.0005995
+                  },
+                  "p95": {
+                    "bucket_lo": 0.001292,
+                    "bucket_hi": 0.001468
+                  },
+                  "p99": {
+                    "bucket_lo": 0.001468,
+                    "bucket_hi": 0.001668
+                  }
+                },
+                "max_bucket_hi_seconds": 0.008799
+              },
+              "{\"op\": \"load_documents\"}": {
+                "labels": {
+                  "op": "load_documents"
+                },
+                "count_delta": 3417.0,
+                "bucket_count_delta": 3417.0,
+                "sum_delta_seconds": 1.8597160210000097,
+                "mean_seconds": 0.0005442540301434035,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.0005275,
+                    "bucket_hi": 0.0005995
+                  },
+                  "p95": {
+                    "bucket_lo": 0.0007743,
+                    "bucket_hi": 0.0008799
+                  },
+                  "p99": {
+                    "bucket_lo": 0.001,
+                    "bucket_hi": 0.001136
+                  }
+                },
+                "max_bucket_hi_seconds": 0.005995
+              },
+              "{\"op\": \"previous_revisions\"}": {
+                "labels": {
+                  "op": "previous_revisions"
+                },
+                "count_delta": 30661.0,
+                "bucket_count_delta": 30661.0,
+                "sum_delta_seconds": 11.69410417699998,
+                "mean_seconds": 0.000381399960112194,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.0003594,
+                    "bucket_hi": 0.0004084
+                  },
+                  "p95": {
+                    "bucket_lo": 0.0005275,
+                    "bucket_hi": 0.0005995
+                  },
+                  "p99": {
+                    "bucket_lo": 0.0006813,
+                    "bucket_hi": 0.0007743
+                  }
+                },
+                "max_bucket_hi_seconds": 0.008799
+              },
+              "{\"op\": \"write\"}": {
+                "labels": {
+                  "op": "write"
+                },
+                "count_delta": 11354.0,
+                "bucket_count_delta": 11354.0,
+                "sum_delta_seconds": 87.97215169400047,
+                "mean_seconds": 0.007748119754623963,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.005275,
+                    "bucket_hi": 0.005995
+                  },
+                  "p95": {
+                    "bucket_lo": 0.01668,
+                    "bucket_hi": 0.01896
+                  },
+                  "p99": {
+                    "bucket_lo": 0.01896,
+                    "bucket_hi": 0.02154
+                  }
+                },
+                "max_bucket_hi_seconds": 0.1136
+              }
+            }
+          },
+          "occRetries": 10000.0,
+          "reportedOccErrors": 10000.0,
+          "resources": {
+            "cell": "batch-2-256docs",
+            "drainSeconds": 28.098044714999997,
+            "cpuMeanPercent": 404.7552777777778,
+            "cpuPeakPercent": 438.68,
+            "cpuSamples": 36,
+            "runtimeBusySeconds": 100.421663441,
+            "holdSeconds": 140.91310404500052,
+            "spanSeconds": 148.092,
+            "residualMeanMs": 0.6732235187414517,
+            "gapAfterSocketP95Ms": 4035.780266999993,
+            "gapAfterSocketP99Ms": 4195.818886000001
+          },
+          "correctness": {
+            "acceptedUniqueCompletedAndAfterReopen": 20000,
+            "companies": 100,
+            "perCompany": 200,
+            "requestErrors": 0,
+            "oom": false,
+            "quickCheck": "ok",
+            "containersRemaining": 0
+          }
+        },
+        {
+          "cell": "batch-3-256docs-one-writer",
+          "profile": "256docs-one-writer",
+          "batchOptions": {
+            "COMMITTER_MAX_WRITE_BATCH_DOCUMENTS": "256",
+            "COMMITTER_MAX_WRITE_BATCH_BYTES": "262144",
+            "COMMITTER_MAX_CONCURRENT_WRITE_BATCHES": "1"
+          },
+          "statsMs": {
+            "totalMs": {
+              "p50": 1518.9681689999998,
+              "p95": 15771.686572999984,
+              "p99": 16955.47357999999,
+              "max": 17284.366058999993
+            },
+            "headMs": {
+              "p50": 1518.9059889999917,
+              "p95": 15771.671712999989,
+              "p99": 16955.371558999992,
+              "max": 17284.358808999998
+            },
+            "handlerLogMs": {
+              "p50": 315.281,
+              "p95": 683.752,
+              "p99": 727.166,
+              "max": 841.232
+            },
+            "gapMs": {
+              "p50": 1064.099552000002,
+              "p95": 15261.151352999994,
+              "p99": 16474.710568000017,
+              "max": 16768.198304000005
+            },
+            "headerGapMs": {
+              "p50": 1063.8365670000067,
+              "p95": 15261.124213000003,
+              "p99": 16474.70332800001,
+              "max": 16768.179703999995
+            },
+            "siteGapMs": {
+              "p50": 1064.099552000002,
+              "p95": 15261.151352999994,
+              "p99": 16474.710568000017,
+              "max": 16768.198304000005
+            },
+            "dispatchLagMs": {
+              "p50": -0.3672510000033071,
+              "p95": 0.11818099999800324,
+              "p99": 0.225585999985924,
+              "max": 23.841060999999172
+            },
+            "socketWaitMs": {
+              "p50": 0.19257099999958882,
+              "p95": 11845.269841000001,
+              "p99": 13164.49769399999,
+              "max": 13522.754358000006
+            },
+            "gapAfterSocketMs": {
+              "p50": 1064.037000999992,
+              "p95": 3702.4206609999983,
+              "p99": 3821.574660000003,
+              "max": 3892.446019
+            }
+          },
+          "drainSeconds": 17.077250450000022,
+          "pendingAtStop": 2284,
+          "writeBatches": {
+            "database_write_batch_commits": {
+              "count": 6031.0,
+              "sum": 20000.0,
+              "mean": 3.31619963521804,
+              "unit": "commits"
+            },
+            "database_write_batch_documents": {
+              "count": 6031.0,
+              "sum": 1220000.0,
+              "mean": 202.28817774830046,
+              "unit": "documents"
+            },
+            "database_write_batch_bytes": {
+              "count": 6031.0,
+              "sum": 866276000.0,
+              "mean": 143637.20775990715,
+              "unit": "bytes"
+            }
+          },
+          "latencyHistograms": {
+            "database_commit_client_seconds": {
+              "{\"identity\": \"instance_admin\"}": {
+                "labels": {
+                  "identity": "instance_admin"
+                },
+                "count_delta": 0.0,
+                "bucket_count_delta": 0,
+                "sum_delta_seconds": 0.0,
+                "mean_seconds": null,
+                "percentile_buckets_seconds": {
+                  "p50": null,
+                  "p95": null,
+                  "p99": null
+                },
+                "max_bucket_hi_seconds": null
+              },
+              "{\"identity\": \"system\"}": {
+                "labels": {
+                  "identity": "system"
+                },
+                "count_delta": 16.0,
+                "bucket_count_delta": 16.0,
+                "sum_delta_seconds": 0.002063098999999999,
+                "mean_seconds": 0.00012894368749999992,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 5.275e-05,
+                    "bucket_hi": 5.995e-05
+                  },
+                  "p95": {
+                    "bucket_lo": 0.0008799,
+                    "bucket_hi": 0.001
+                  },
+                  "p99": {
+                    "bucket_lo": 0.0008799,
+                    "bucket_hi": 0.001
+                  }
+                },
+                "max_bucket_hi_seconds": 0.001
+              },
+              "{\"identity\": \"unknown\"}": {
+                "labels": {
+                  "identity": "unknown"
+                },
+                "count_delta": 30000.0,
+                "bucket_count_delta": 30000.0,
+                "sum_delta_seconds": 3294.507518188993,
+                "mean_seconds": 0.10981691727296643,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.04084,
+                    "bucket_hi": 0.04642
+                  },
+                  "p95": {
+                    "bucket_lo": 0.2448,
+                    "bucket_hi": 0.2783
+                  },
+                  "p99": {
+                    "bucket_lo": 0.2783,
+                    "bucket_hi": 0.3162
+                  }
+                },
+                "max_bucket_hi_seconds": 0.3594
+              }
+            },
+            "database_commit_seconds": {
+              "{\"status\": \"error\"}": {
+                "labels": {
+                  "status": "error"
+                },
+                "count_delta": 10000.0,
+                "bucket_count_delta": 10000.0,
+                "sum_delta_seconds": 3.495610621000013,
+                "mean_seconds": 0.00034956106210000127,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.0003594,
+                    "bucket_hi": 0.0004084
+                  },
+                  "p95": {
+                    "bucket_lo": 0.0005995,
+                    "bucket_hi": 0.0006813
+                  },
+                  "p99": {
+                    "bucket_lo": 0.0007743,
+                    "bucket_hi": 0.0008799
+                  }
+                },
+                "max_bucket_hi_seconds": 0.005995
+              },
+              "{\"status\": \"success\"}": {
+                "labels": {
+                  "status": "success"
+                },
+                "count_delta": 20000.0,
+                "bucket_count_delta": 20000.0,
+                "sum_delta_seconds": 2531.7303182169912,
+                "mean_seconds": 0.12658651591084957,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.1468,
+                    "bucket_hi": 0.1668
+                  },
+                  "p95": {
+                    "bucket_lo": 0.2154,
+                    "bucket_hi": 0.2448
+                  },
+                  "p99": {
+                    "bucket_lo": 0.2448,
+                    "bucket_hi": 0.2783
+                  }
+                },
+                "max_bucket_hi_seconds": 0.3162
+              }
+            },
+            "database_commit_queue_seconds": {
+              "{}": {
+                "labels": {},
+                "count_delta": 30016.0,
+                "bucket_count_delta": 30016.0,
+                "sum_delta_seconds": 21.80851959300006,
+                "mean_seconds": 0.0007265631527518676,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.0005275,
+                    "bucket_hi": 0.0005995
+                  },
+                  "p95": {
+                    "bucket_lo": 0.001668,
+                    "bucket_hi": 0.001896
+                  },
+                  "p99": {
+                    "bucket_lo": 0.002448,
+                    "bucket_hi": 0.002783
+                  }
+                },
+                "max_bucket_hi_seconds": 0.008799
+              }
+            },
+            "database_commit_persistence_write_seconds": {
+              "{\"status\": \"success\"}": {
+                "labels": {
+                  "status": "success"
+                },
+                "count_delta": 6031.0,
+                "bucket_count_delta": 6031.0,
+                "sum_delta_seconds": 123.67790371399984,
+                "mean_seconds": 0.02050703095904491,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.01468,
+                    "bucket_hi": 0.01668
+                  },
+                  "p95": {
+                    "bucket_lo": 0.04084,
+                    "bucket_hi": 0.04642
+                  },
+                  "p99": {
+                    "bucket_lo": 0.04642,
+                    "bucket_hi": 0.05275
+                  }
+                },
+                "max_bucket_hi_seconds": 0.1136
+              }
+            },
+            "sqlite_permit_wait_seconds": {
+              "{\"flavor\": \"multi\", \"op\": \"globals\"}": {
+                "labels": {
+                  "flavor": "multi",
+                  "op": "globals"
+                },
+                "count_delta": 76.0,
+                "bucket_count_delta": 76.0,
+                "sum_delta_seconds": 1.8362164930000002,
+                "mean_seconds": 0.02416074332894737,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.02448,
+                    "bucket_hi": 0.02783
+                  },
+                  "p95": {
+                    "bucket_lo": 0.04084,
+                    "bucket_hi": 0.04642
+                  },
+                  "p99": {
+                    "bucket_lo": 0.04642,
+                    "bucket_hi": 0.05275
+                  }
+                },
+                "max_bucket_hi_seconds": 0.05275
+              },
+              "{\"flavor\": \"multi\", \"op\": \"index_scan\"}": {
+                "labels": {
+                  "flavor": "multi",
+                  "op": "index_scan"
+                },
+                "count_delta": 60004.0,
+                "bucket_count_delta": 60004.0,
+                "sum_delta_seconds": 1422.7248958239913,
+                "mean_seconds": 0.02371050089700672,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.02448,
+                    "bucket_hi": 0.02783
+                  },
+                  "p95": {
+                    "bucket_lo": 0.04084,
+                    "bucket_hi": 0.04642
+                  },
+                  "p99": {
+                    "bucket_lo": 0.04642,
+                    "bucket_hi": 0.05275
+                  }
+                },
+                "max_bucket_hi_seconds": 0.1136
+              },
+              "{\"flavor\": \"multi\", \"op\": \"load_documents\"}": {
+                "labels": {
+                  "flavor": "multi",
+                  "op": "load_documents"
+                },
+                "count_delta": 4614.0,
+                "bucket_count_delta": 4614.0,
+                "sum_delta_seconds": 93.353730458,
+                "mean_seconds": 0.02023271141265713,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.01896,
+                    "bucket_hi": 0.02154
+                  },
+                  "p95": {
+                    "bucket_lo": 0.04084,
+                    "bucket_hi": 0.04642
+                  },
+                  "p99": {
+                    "bucket_lo": 0.04642,
+                    "bucket_hi": 0.05275
+                  }
+                },
+                "max_bucket_hi_seconds": 0.1136
+              },
+              "{\"flavor\": \"multi\", \"op\": \"previous_revisions\"}": {
+                "labels": {
+                  "flavor": "multi",
+                  "op": "previous_revisions"
+                },
+                "count_delta": 30895.0,
+                "bucket_count_delta": 30895.0,
+                "sum_delta_seconds": 732.50889194,
+                "mean_seconds": 0.02370962589221557,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.02448,
+                    "bucket_hi": 0.02783
+                  },
+                  "p95": {
+                    "bucket_lo": 0.04084,
+                    "bucket_hi": 0.04642
+                  },
+                  "p99": {
+                    "bucket_lo": 0.04642,
+                    "bucket_hi": 0.05275
+                  }
+                },
+                "max_bucket_hi_seconds": 0.1136
+              },
+              "{\"flavor\": \"multi\", \"op\": \"write\"}": {
+                "labels": {
+                  "flavor": "multi",
+                  "op": "write"
+                },
+                "count_delta": 6031.0,
+                "bucket_count_delta": 6031.0,
+                "sum_delta_seconds": 49.37385808700007,
+                "mean_seconds": 0.008186678508870846,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.005275,
+                    "bucket_hi": 0.005995
+                  },
+                  "p95": {
+                    "bucket_lo": 0.01668,
+                    "bucket_hi": 0.01896
+                  },
+                  "p99": {
+                    "bucket_lo": 0.01896,
+                    "bucket_hi": 0.02154
+                  }
+                },
+                "max_bucket_hi_seconds": 0.03162
+              }
+            },
+            "sqlite_lock_hold_seconds": {
+              "{\"op\": \"globals\"}": {
+                "labels": {
+                  "op": "globals"
+                },
+                "count_delta": 76.0,
+                "bucket_count_delta": 76.0,
+                "sum_delta_seconds": 0.03018294299999999,
+                "mean_seconds": 0.00039714398684210513,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.0004084,
+                    "bucket_hi": 0.0004642
+                  },
+                  "p95": {
+                    "bucket_lo": 0.0007743,
+                    "bucket_hi": 0.0008799
+                  },
+                  "p99": {
+                    "bucket_lo": 0.0008799,
+                    "bucket_hi": 0.001
+                  }
+                },
+                "max_bucket_hi_seconds": 0.001
+              },
+              "{\"op\": \"index_scan\"}": {
+                "labels": {
+                  "op": "index_scan"
+                },
+                "count_delta": 60004.0,
+                "bucket_count_delta": 60004.0,
+                "sum_delta_seconds": 40.262454261999956,
+                "mean_seconds": 0.00067099617128858,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.0005995,
+                    "bucket_hi": 0.0006813
+                  },
+                  "p95": {
+                    "bucket_lo": 0.001292,
+                    "bucket_hi": 0.001468
+                  },
+                  "p99": {
+                    "bucket_lo": 0.001668,
+                    "bucket_hi": 0.001896
+                  }
+                },
+                "max_bucket_hi_seconds": 0.01136
+              },
+              "{\"op\": \"load_documents\"}": {
+                "labels": {
+                  "op": "load_documents"
+                },
+                "count_delta": 4611.0,
+                "bucket_count_delta": 4611.0,
+                "sum_delta_seconds": 2.532315116000005,
+                "mean_seconds": 0.0005491900056386911,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.0004642,
+                    "bucket_hi": 0.0005275
+                  },
+                  "p95": {
+                    "bucket_lo": 0.0007743,
+                    "bucket_hi": 0.0008799
+                  },
+                  "p99": {
+                    "bucket_lo": 0.001136,
+                    "bucket_hi": 0.001292
+                  }
+                },
+                "max_bucket_hi_seconds": 0.008799
+              },
+              "{\"op\": \"previous_revisions\"}": {
+                "labels": {
+                  "op": "previous_revisions"
+                },
+                "count_delta": 30895.0,
+                "bucket_count_delta": 30895.0,
+                "sum_delta_seconds": 12.097597037000023,
+                "mean_seconds": 0.00039157135578572657,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.0003594,
+                    "bucket_hi": 0.0004084
+                  },
+                  "p95": {
+                    "bucket_lo": 0.0005275,
+                    "bucket_hi": 0.0005995
+                  },
+                  "p99": {
+                    "bucket_lo": 0.0006813,
+                    "bucket_hi": 0.0007743
+                  }
+                },
+                "max_bucket_hi_seconds": 0.006813
+              },
+              "{\"op\": \"write\"}": {
+                "labels": {
+                  "op": "write"
+                },
+                "count_delta": 6031.0,
+                "bucket_count_delta": 6031.0,
+                "sum_delta_seconds": 74.01755855800005,
+                "mean_seconds": 0.012272850034488483,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.01,
+                    "bucket_hi": 0.01136
+                  },
+                  "p95": {
+                    "bucket_lo": 0.02448,
+                    "bucket_hi": 0.02783
+                  },
+                  "p99": {
+                    "bucket_lo": 0.02783,
+                    "bucket_hi": 0.03162
+                  }
+                },
+                "max_bucket_hi_seconds": 0.1
+              }
+            }
+          },
+          "occRetries": 10000.0,
+          "reportedOccErrors": 10000.0,
+          "resources": {
+            "cell": "batch-3-256docs-one-writer",
+            "drainSeconds": 17.077250450000022,
+            "cpuMeanPercent": 421.88323529411764,
+            "cpuPeakPercent": 476.54,
+            "cpuSamples": 34,
+            "runtimeBusySeconds": 97.609404489,
+            "holdSeconds": 128.94010791600004,
+            "spanSeconds": 137.071,
+            "residualMeanMs": 0.6957576853021692,
+            "gapAfterSocketP95Ms": 3702.4206609999983,
+            "gapAfterSocketP99Ms": 3821.574660000003
+          },
+          "correctness": {
+            "acceptedUniqueCompletedAndAfterReopen": 20000,
+            "companies": 100,
+            "perCompany": 200,
+            "requestErrors": 0,
+            "oom": false,
+            "quickCheck": "ok",
+            "containersRemaining": 0
+          }
+        },
+        {
+          "cell": "batch-4-256docs-one-writer",
+          "profile": "256docs-one-writer",
+          "batchOptions": {
+            "COMMITTER_MAX_WRITE_BATCH_DOCUMENTS": "256",
+            "COMMITTER_MAX_WRITE_BATCH_BYTES": "262144",
+            "COMMITTER_MAX_CONCURRENT_WRITE_BATCHES": "1"
+          },
+          "statsMs": {
+            "totalMs": {
+              "p50": 8725.535935000007,
+              "p95": 13594.078106,
+              "p99": 13871.486155999999,
+              "max": 14036.719744000002
+            },
+            "headMs": {
+              "p50": 8725.51900500001,
+              "p95": 13594.06148600002,
+              "p99": 13871.439546000009,
+              "max": 14036.70347399998
+            },
+            "handlerLogMs": {
+              "p50": 349.413,
+              "p95": 646.535,
+              "p99": 713.934,
+              "max": 804.874
+            },
+            "gapMs": {
+              "p50": 8235.123881000003,
+              "p95": 13186.786006999986,
+              "p99": 13406.952974999993,
+              "max": 13515.305948999996
+            },
+            "headerGapMs": {
+              "p50": 8235.042511000003,
+              "p95": 13186.775277000006,
+              "p99": 13406.936085000005,
+              "max": 13515.296148999996
+            },
+            "siteGapMs": {
+              "p50": 8235.123881000003,
+              "p95": 13186.786006999986,
+              "p99": 13406.952974999993,
+              "max": 13515.305948999996
+            },
+            "dispatchLagMs": {
+              "p50": -0.34604399999807356,
+              "p95": 0.3470519999973476,
+              "p99": 0.6721489999981713,
+              "max": 16.55916000000434
+            },
+            "socketWaitMs": {
+              "p50": 4665.488666999998,
+              "p95": 10178.168221,
+              "p99": 10657.476900000009,
+              "max": 10687.427735999983
+            },
+            "gapAfterSocketMs": {
+              "p50": 2811.9035290000174,
+              "p95": 3512.323941999991,
+              "p99": 3754.6410930000075,
+              "max": 3867.8774270000013
+            }
+          },
+          "drainSeconds": 13.812545917999989,
+          "pendingAtStop": 2154,
+          "writeBatches": {
+            "database_write_batch_commits": {
+              "count": 4521.0,
+              "sum": 20000.0,
+              "mean": 4.423800044238001,
+              "unit": "commits"
+            },
+            "database_write_batch_documents": {
+              "count": 4521.0,
+              "sum": 1220000.0,
+              "mean": 269.85180269851804,
+              "unit": "documents"
+            },
+            "database_write_batch_bytes": {
+              "count": 4521.0,
+              "sum": 866276000.0,
+              "mean": 191611.5903561159,
+              "unit": "bytes"
+            }
+          },
+          "latencyHistograms": {
+            "database_commit_client_seconds": {
+              "{\"identity\": \"instance_admin\"}": {
+                "labels": {
+                  "identity": "instance_admin"
+                },
+                "count_delta": 0.0,
+                "bucket_count_delta": 0,
+                "sum_delta_seconds": 0.0,
+                "mean_seconds": null,
+                "percentile_buckets_seconds": {
+                  "p50": null,
+                  "p95": null,
+                  "p99": null
+                },
+                "max_bucket_hi_seconds": null
+              },
+              "{\"identity\": \"system\"}": {
+                "labels": {
+                  "identity": "system"
+                },
+                "count_delta": 12.0,
+                "bucket_count_delta": 12.0,
+                "sum_delta_seconds": 0.004326712000000003,
+                "mean_seconds": 0.00036055933333333363,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 4.084e-05,
+                    "bucket_hi": 4.642e-05
+                  },
+                  "p95": {
+                    "bucket_lo": 0.001668,
+                    "bucket_hi": 0.001896
+                  },
+                  "p99": {
+                    "bucket_lo": 0.001668,
+                    "bucket_hi": 0.001896
+                  }
+                },
+                "max_bucket_hi_seconds": 0.001896
+              },
+              "{\"identity\": \"unknown\"}": {
+                "labels": {
+                  "identity": "unknown"
+                },
+                "count_delta": 30000.0,
+                "bucket_count_delta": 30000.0,
+                "sum_delta_seconds": 4140.765469521007,
+                "mean_seconds": 0.13802551565070023,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.1668,
+                    "bucket_hi": 0.1896
+                  },
+                  "p95": {
+                    "bucket_lo": 0.2448,
+                    "bucket_hi": 0.2783
+                  },
+                  "p99": {
+                    "bucket_lo": 0.2448,
+                    "bucket_hi": 0.2783
+                  }
+                },
+                "max_bucket_hi_seconds": 0.3162
+              }
+            },
+            "database_commit_seconds": {
+              "{\"status\": \"error\"}": {
+                "labels": {
+                  "status": "error"
+                },
+                "count_delta": 10000.0,
+                "bucket_count_delta": 10000.0,
+                "sum_delta_seconds": 4.001603843000007,
+                "mean_seconds": 0.00040016038430000067,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.0003594,
+                    "bucket_hi": 0.0004084
+                  },
+                  "p95": {
+                    "bucket_lo": 0.0005995,
+                    "bucket_hi": 0.0006813
+                  },
+                  "p99": {
+                    "bucket_lo": 0.0007743,
+                    "bucket_hi": 0.0008799
+                  }
+                },
+                "max_bucket_hi_seconds": 0.005995
+              },
+              "{\"status\": \"success\"}": {
+                "labels": {
+                  "status": "success"
+                },
+                "count_delta": 20000.0,
+                "bucket_count_delta": 20000.0,
+                "sum_delta_seconds": 3246.415192217997,
+                "mean_seconds": 0.16232075961089987,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.1668,
+                    "bucket_hi": 0.1896
+                  },
+                  "p95": {
+                    "bucket_lo": 0.2154,
+                    "bucket_hi": 0.2448
+                  },
+                  "p99": {
+                    "bucket_lo": 0.2154,
+                    "bucket_hi": 0.2448
+                  }
+                },
+                "max_bucket_hi_seconds": 0.2783
+              }
+            },
+            "database_commit_queue_seconds": {
+              "{}": {
+                "labels": {},
+                "count_delta": 30012.0,
+                "bucket_count_delta": 30012.0,
+                "sum_delta_seconds": 24.074722668999765,
+                "mean_seconds": 0.0008021698876782542,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.0005275,
+                    "bucket_hi": 0.0005995
+                  },
+                  "p95": {
+                    "bucket_lo": 0.001896,
+                    "bucket_hi": 0.002154
+                  },
+                  "p99": {
+                    "bucket_lo": 0.002783,
+                    "bucket_hi": 0.003162
+                  }
+                },
+                "max_bucket_hi_seconds": 0.008799
+              }
+            },
+            "database_commit_persistence_write_seconds": {
+              "{\"status\": \"success\"}": {
+                "labels": {
+                  "status": "success"
+                },
+                "count_delta": 4521.0,
+                "bucket_count_delta": 4521.0,
+                "sum_delta_seconds": 127.46815488999964,
+                "mean_seconds": 0.028194681462065836,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.02783,
+                    "bucket_hi": 0.03162
+                  },
+                  "p95": {
+                    "bucket_lo": 0.04084,
+                    "bucket_hi": 0.04642
+                  },
+                  "p99": {
+                    "bucket_lo": 0.04642,
+                    "bucket_hi": 0.05275
+                  }
+                },
+                "max_bucket_hi_seconds": 0.1
+              }
+            },
+            "sqlite_permit_wait_seconds": {
+              "{\"flavor\": \"multi\", \"op\": \"globals\"}": {
+                "labels": {
+                  "flavor": "multi",
+                  "op": "globals"
+                },
+                "count_delta": 84.0,
+                "bucket_count_delta": 84.0,
+                "sum_delta_seconds": 2.3208295530000003,
+                "mean_seconds": 0.027628923250000003,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.02783,
+                    "bucket_hi": 0.03162
+                  },
+                  "p95": {
+                    "bucket_lo": 0.04084,
+                    "bucket_hi": 0.04642
+                  },
+                  "p99": {
+                    "bucket_lo": 0.04084,
+                    "bucket_hi": 0.04642
+                  }
+                },
+                "max_bucket_hi_seconds": 0.04642
+              },
+              "{\"flavor\": \"multi\", \"op\": \"index_scan\"}": {
+                "labels": {
+                  "flavor": "multi",
+                  "op": "index_scan"
+                },
+                "count_delta": 60004.0,
+                "bucket_count_delta": 60004.0,
+                "sum_delta_seconds": 1703.9473213999786,
+                "mean_seconds": 0.028397228874741328,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.02783,
+                    "bucket_hi": 0.03162
+                  },
+                  "p95": {
+                    "bucket_lo": 0.04084,
+                    "bucket_hi": 0.04642
+                  },
+                  "p99": {
+                    "bucket_lo": 0.04642,
+                    "bucket_hi": 0.05275
+                  }
+                },
+                "max_bucket_hi_seconds": 0.1
+              },
+              "{\"flavor\": \"multi\", \"op\": \"load_documents\"}": {
+                "labels": {
+                  "flavor": "multi",
+                  "op": "load_documents"
+                },
+                "count_delta": 3186.0,
+                "bucket_count_delta": 3186.0,
+                "sum_delta_seconds": 93.85594160500013,
+                "mean_seconds": 0.02945886428279979,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.02783,
+                    "bucket_hi": 0.03162
+                  },
+                  "p95": {
+                    "bucket_lo": 0.04084,
+                    "bucket_hi": 0.04642
+                  },
+                  "p99": {
+                    "bucket_lo": 0.04642,
+                    "bucket_hi": 0.05275
+                  }
+                },
+                "max_bucket_hi_seconds": 0.08799
+              },
+              "{\"flavor\": \"multi\", \"op\": \"previous_revisions\"}": {
+                "labels": {
+                  "flavor": "multi",
+                  "op": "previous_revisions"
+                },
+                "count_delta": 30616.0,
+                "bucket_count_delta": 30616.0,
+                "sum_delta_seconds": 860.2325185580006,
+                "mean_seconds": 0.028097482315064037,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.02783,
+                    "bucket_hi": 0.03162
+                  },
+                  "p95": {
+                    "bucket_lo": 0.04084,
+                    "bucket_hi": 0.04642
+                  },
+                  "p99": {
+                    "bucket_lo": 0.04084,
+                    "bucket_hi": 0.04642
+                  }
+                },
+                "max_bucket_hi_seconds": 0.08799
+              },
+              "{\"flavor\": \"multi\", \"op\": \"write\"}": {
+                "labels": {
+                  "flavor": "multi",
+                  "op": "write"
+                },
+                "count_delta": 4521.0,
+                "bucket_count_delta": 4521.0,
+                "sum_delta_seconds": 55.533606018,
+                "mean_seconds": 0.012283478437956205,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.01292,
+                    "bucket_hi": 0.01468
+                  },
+                  "p95": {
+                    "bucket_lo": 0.01668,
+                    "bucket_hi": 0.01896
+                  },
+                  "p99": {
+                    "bucket_lo": 0.02154,
+                    "bucket_hi": 0.02448
+                  }
+                },
+                "max_bucket_hi_seconds": 0.02783
+              }
+            },
+            "sqlite_lock_hold_seconds": {
+              "{\"op\": \"globals\"}": {
+                "labels": {
+                  "op": "globals"
+                },
+                "count_delta": 84.0,
+                "bucket_count_delta": 84.0,
+                "sum_delta_seconds": 0.043016106999999984,
+                "mean_seconds": 0.0005120965119047617,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.0004642,
+                    "bucket_hi": 0.0005275
+                  },
+                  "p95": {
+                    "bucket_lo": 0.001,
+                    "bucket_hi": 0.001136
+                  },
+                  "p99": {
+                    "bucket_lo": 0.005275,
+                    "bucket_hi": 0.005995
+                  }
+                },
+                "max_bucket_hi_seconds": 0.005995
+              },
+              "{\"op\": \"index_scan\"}": {
+                "labels": {
+                  "op": "index_scan"
+                },
+                "count_delta": 60004.0,
+                "bucket_count_delta": 60004.0,
+                "sum_delta_seconds": 40.49386373599979,
+                "mean_seconds": 0.0006748527387507464,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.0005995,
+                    "bucket_hi": 0.0006813
+                  },
+                  "p95": {
+                    "bucket_lo": 0.001292,
+                    "bucket_hi": 0.001468
+                  },
+                  "p99": {
+                    "bucket_lo": 0.001668,
+                    "bucket_hi": 0.001896
+                  }
+                },
+                "max_bucket_hi_seconds": 0.01
+              },
+              "{\"op\": \"load_documents\"}": {
+                "labels": {
+                  "op": "load_documents"
+                },
+                "count_delta": 3182.0,
+                "bucket_count_delta": 3182.0,
+                "sum_delta_seconds": 1.8708801860000035,
+                "mean_seconds": 0.0005879573180389703,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.0005275,
+                    "bucket_hi": 0.0005995
+                  },
+                  "p95": {
+                    "bucket_lo": 0.0007743,
+                    "bucket_hi": 0.0008799
+                  },
+                  "p99": {
+                    "bucket_lo": 0.001136,
+                    "bucket_hi": 0.001292
+                  }
+                },
+                "max_bucket_hi_seconds": 0.006813
+              },
+              "{\"op\": \"previous_revisions\"}": {
+                "labels": {
+                  "op": "previous_revisions"
+                },
+                "count_delta": 30615.0,
+                "bucket_count_delta": 30615.0,
+                "sum_delta_seconds": 12.047434891000082,
+                "mean_seconds": 0.00039351412350155417,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.0003594,
+                    "bucket_hi": 0.0004084
+                  },
+                  "p95": {
+                    "bucket_lo": 0.0005275,
+                    "bucket_hi": 0.0005995
+                  },
+                  "p99": {
+                    "bucket_lo": 0.0006813,
+                    "bucket_hi": 0.0007743
+                  }
+                },
+                "max_bucket_hi_seconds": 0.01
+              },
+              "{\"op\": \"write\"}": {
+                "labels": {
+                  "op": "write"
+                },
+                "count_delta": 4521.0,
+                "bucket_count_delta": 4521.0,
+                "sum_delta_seconds": 71.6681480819997,
+                "mean_seconds": 0.015852277832780294,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.01468,
+                    "bucket_hi": 0.01668
+                  },
+                  "p95": {
+                    "bucket_lo": 0.02448,
+                    "bucket_hi": 0.02783
+                  },
+                  "p99": {
+                    "bucket_lo": 0.02783,
+                    "bucket_hi": 0.03162
+                  }
+                },
+                "max_bucket_hi_seconds": 0.08799
+              }
+            }
+          },
+          "occRetries": 10000.0,
+          "reportedOccErrors": 10000.0,
+          "resources": {
+            "cell": "batch-4-256docs-one-writer",
+            "drainSeconds": 13.812545917999989,
+            "cpuMeanPercent": 435.9912121212121,
+            "cpuPeakPercent": 537.02,
+            "cpuSamples": 33,
+            "runtimeBusySeconds": 98.333337977,
+            "holdSeconds": 126.12334300199957,
+            "spanSeconds": 133.806,
+            "residualMeanMs": 0.7876469271968745,
+            "gapAfterSocketP95Ms": 3512.323941999991,
+            "gapAfterSocketP99Ms": 3754.6410930000075
+          },
+          "correctness": {
+            "acceptedUniqueCompletedAndAfterReopen": 20000,
+            "companies": 100,
+            "perCompany": 200,
+            "requestErrors": 0,
+            "oom": false,
+            "quickCheck": "ok",
+            "containersRemaining": 0
+          }
+        },
+        {
+          "cell": "batch-5-256docs",
+          "profile": "256docs",
+          "batchOptions": {
+            "COMMITTER_MAX_WRITE_BATCH_DOCUMENTS": "256",
+            "COMMITTER_MAX_WRITE_BATCH_BYTES": "262144"
+          },
+          "statsMs": {
+            "totalMs": {
+              "p50": 163.34869199999957,
+              "p95": 1171.0733650000184,
+              "p99": 1499.090234000003,
+              "max": 1709.5282420000003
+            },
+            "headMs": {
+              "p50": 163.28224500000942,
+              "p95": 1170.6865690000122,
+              "p99": 1499.0336740000057,
+              "max": 1709.3933620000025
+            },
+            "handlerLogMs": {
+              "p50": 162.855,
+              "p95": 557.973,
+              "p99": 609.663,
+              "max": 756.055
+            },
+            "gapMs": {
+              "p50": 0.5517209999973147,
+              "p95": 833.3507210000081,
+              "p99": 1005.9437269999876,
+              "max": 1140.3944879999892
+            },
+            "headerGapMs": {
+              "p50": 0.46174700000113944,
+              "p95": 833.2549000000128,
+              "p99": 1005.8472869999937,
+              "max": 1140.3070379999974
+            },
+            "siteGapMs": {
+              "p50": 0.5517209999973147,
+              "p95": 833.3507210000081,
+              "p99": 1005.9437269999876,
+              "max": 1140.3944879999892
+            },
+            "dispatchLagMs": {
+              "p50": -0.412237999989884,
+              "p95": 0.48109800000383984,
+              "p99": 0.6602790000033565,
+              "max": 7.238756000006106
+            },
+            "socketWaitMs": {
+              "p50": 0.1117110000050161,
+              "p95": 0.19256100000347942,
+              "p99": 0.2720310000004247,
+              "max": 13.210596000018995
+            },
+            "gapAfterSocketMs": {
+              "p50": 0.42681699999457123,
+              "p95": 833.1590799999959,
+              "p99": 1005.8361269999991,
+              "max": 1140.1226369999915
+            }
+          },
+          "drainSeconds": 1.4989287719999846,
+          "pendingAtStop": 236,
+          "writeBatches": {
+            "database_write_batch_commits": {
+              "count": 13291.0,
+              "sum": 20000.0,
+              "mean": 1.5047776690993906,
+              "unit": "commits"
+            },
+            "database_write_batch_documents": {
+              "count": 13291.0,
+              "sum": 1220000.0,
+              "mean": 91.79143781506282,
+              "unit": "documents"
+            },
+            "database_write_batch_bytes": {
+              "count": 13291.0,
+              "sum": 866276000.0,
+              "mean": 65177.63900383718,
+              "unit": "bytes"
+            }
+          },
+          "latencyHistograms": {
+            "database_commit_client_seconds": {
+              "{\"identity\": \"instance_admin\"}": {
+                "labels": {
+                  "identity": "instance_admin"
+                },
+                "count_delta": 0.0,
+                "bucket_count_delta": 0,
+                "sum_delta_seconds": 0.0,
+                "mean_seconds": null,
+                "percentile_buckets_seconds": {
+                  "p50": null,
+                  "p95": null,
+                  "p99": null
+                },
+                "max_bucket_hi_seconds": null
+              },
+              "{\"identity\": \"system\"}": {
+                "labels": {
+                  "identity": "system"
+                },
+                "count_delta": 10.0,
+                "bucket_count_delta": 10.0,
+                "sum_delta_seconds": 0.0006614230000000047,
+                "mean_seconds": 6.614230000000047e-05,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 2.154e-05,
+                    "bucket_hi": 2.448e-05
+                  },
+                  "p95": {
+                    "bucket_lo": 0.0003162,
+                    "bucket_hi": 0.0003594
+                  },
+                  "p99": {
+                    "bucket_lo": 0.0003162,
+                    "bucket_hi": 0.0003594
+                  }
+                },
+                "max_bucket_hi_seconds": 0.0003594
+              },
+              "{\"identity\": \"unknown\"}": {
+                "labels": {
+                  "identity": "unknown"
+                },
+                "count_delta": 29999.0,
+                "bucket_count_delta": 29999.0,
+                "sum_delta_seconds": 1143.7220395870038,
+                "mean_seconds": 0.03812533883086115,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.02783,
+                    "bucket_hi": 0.03162
+                  },
+                  "p95": {
+                    "bucket_lo": 0.07743,
+                    "bucket_hi": 0.08799
+                  },
+                  "p99": {
+                    "bucket_lo": 0.08799,
+                    "bucket_hi": 0.1
+                  }
+                },
+                "max_bucket_hi_seconds": 0.4642
+              }
+            },
+            "database_commit_seconds": {
+              "{\"status\": \"error\"}": {
+                "labels": {
+                  "status": "error"
+                },
+                "count_delta": 9999.0,
+                "bucket_count_delta": 9999.0,
+                "sum_delta_seconds": 1.2130493789999968,
+                "mean_seconds": 0.00012131706960696038,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.0001136,
+                    "bucket_hi": 0.0001292
+                  },
+                  "p95": {
+                    "bucket_lo": 0.0002783,
+                    "bucket_hi": 0.0003162
+                  },
+                  "p99": {
+                    "bucket_lo": 0.0003594,
+                    "bucket_hi": 0.0004084
+                  }
+                },
+                "max_bucket_hi_seconds": 0.005995
+              },
+              "{\"status\": \"success\"}": {
+                "labels": {
+                  "status": "success"
+                },
+                "count_delta": 20000.0,
+                "bucket_count_delta": 20000.0,
+                "sum_delta_seconds": 494.63543067999956,
+                "mean_seconds": 0.02473177153399998,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.01896,
+                    "bucket_hi": 0.02154
+                  },
+                  "p95": {
+                    "bucket_lo": 0.05275,
+                    "bucket_hi": 0.05995
+                  },
+                  "p99": {
+                    "bucket_lo": 0.05995,
+                    "bucket_hi": 0.06813
+                  }
+                },
+                "max_bucket_hi_seconds": 0.4084
+              }
+            },
+            "database_commit_queue_seconds": {
+              "{}": {
+                "labels": {},
+                "count_delta": 30009.0,
+                "bucket_count_delta": 30009.0,
+                "sum_delta_seconds": 22.362648894000007,
+                "mean_seconds": 0.0007451980703788865,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.0004642,
+                    "bucket_hi": 0.0005275
+                  },
+                  "p95": {
+                    "bucket_lo": 0.002154,
+                    "bucket_hi": 0.002448
+                  },
+                  "p99": {
+                    "bucket_lo": 0.003162,
+                    "bucket_hi": 0.003594
+                  }
+                },
+                "max_bucket_hi_seconds": 0.01136
+              }
+            },
+            "database_commit_persistence_write_seconds": {
+              "{\"status\": \"success\"}": {
+                "labels": {
+                  "status": "success"
+                },
+                "count_delta": 13291.0,
+                "bucket_count_delta": 13291.0,
+                "sum_delta_seconds": 240.10938327200125,
+                "mean_seconds": 0.018065561904446713,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.01136,
+                    "bucket_hi": 0.01292
+                  },
+                  "p95": {
+                    "bucket_lo": 0.04642,
+                    "bucket_hi": 0.05275
+                  },
+                  "p99": {
+                    "bucket_lo": 0.05275,
+                    "bucket_hi": 0.05995
+                  }
+                },
+                "max_bucket_hi_seconds": 0.4084
+              }
+            },
+            "sqlite_permit_wait_seconds": {
+              "{\"flavor\": \"multi\", \"op\": \"globals\"}": {
+                "labels": {
+                  "flavor": "multi",
+                  "op": "globals"
+                },
+                "count_delta": 86.0,
+                "bucket_count_delta": 86.0,
+                "sum_delta_seconds": 1.116510303,
+                "mean_seconds": 0.012982677941860466,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.002448,
+                    "bucket_hi": 0.002783
+                  },
+                  "p95": {
+                    "bucket_lo": 0.03594,
+                    "bucket_hi": 0.04084
+                  },
+                  "p99": {
+                    "bucket_lo": 0.04642,
+                    "bucket_hi": 0.05275
+                  }
+                },
+                "max_bucket_hi_seconds": 0.05275
+              },
+              "{\"flavor\": \"multi\", \"op\": \"index_scan\"}": {
+                "labels": {
+                  "flavor": "multi",
+                  "op": "index_scan"
+                },
+                "count_delta": 60008.0,
+                "bucket_count_delta": 60008.0,
+                "sum_delta_seconds": 997.692670207998,
+                "mean_seconds": 0.01662599437088385,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.01,
+                    "bucket_hi": 0.01136
+                  },
+                  "p95": {
+                    "bucket_lo": 0.04642,
+                    "bucket_hi": 0.05275
+                  },
+                  "p99": {
+                    "bucket_lo": 0.05275,
+                    "bucket_hi": 0.05995
+                  }
+                },
+                "max_bucket_hi_seconds": 0.4084
+              },
+              "{\"flavor\": \"multi\", \"op\": \"load_documents\"}": {
+                "labels": {
+                  "flavor": "multi",
+                  "op": "load_documents"
+                },
+                "count_delta": 6863.0,
+                "bucket_count_delta": 6863.0,
+                "sum_delta_seconds": 59.73088970500008,
+                "mean_seconds": 0.008703320662246843,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.002783,
+                    "bucket_hi": 0.003162
+                  },
+                  "p95": {
+                    "bucket_lo": 0.03594,
+                    "bucket_hi": 0.04084
+                  },
+                  "p99": {
+                    "bucket_lo": 0.04642,
+                    "bucket_hi": 0.05275
+                  }
+                },
+                "max_bucket_hi_seconds": 0.05995
+              },
+              "{\"flavor\": \"multi\", \"op\": \"previous_revisions\"}": {
+                "labels": {
+                  "flavor": "multi",
+                  "op": "previous_revisions"
+                },
+                "count_delta": 31336.0,
+                "bucket_count_delta": 31336.0,
+                "sum_delta_seconds": 621.3048428810048,
+                "mean_seconds": 0.019827190543815574,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.01668,
+                    "bucket_hi": 0.01896
+                  },
+                  "p95": {
+                    "bucket_lo": 0.04642,
+                    "bucket_hi": 0.05275
+                  },
+                  "p99": {
+                    "bucket_lo": 0.05275,
+                    "bucket_hi": 0.05995
+                  }
+                },
+                "max_bucket_hi_seconds": 0.4084
+              },
+              "{\"flavor\": \"multi\", \"op\": \"write\"}": {
+                "labels": {
+                  "flavor": "multi",
+                  "op": "write"
+                },
+                "count_delta": 13291.0,
+                "bucket_count_delta": 13291.0,
+                "sum_delta_seconds": 168.83549704599963,
+                "mean_seconds": 0.012702994285305818,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.005275,
+                    "bucket_hi": 0.005995
+                  },
+                  "p95": {
+                    "bucket_lo": 0.04084,
+                    "bucket_hi": 0.04642
+                  },
+                  "p99": {
+                    "bucket_lo": 0.04642,
+                    "bucket_hi": 0.05275
+                  }
+                },
+                "max_bucket_hi_seconds": 0.4084
+              }
+            },
+            "sqlite_lock_hold_seconds": {
+              "{\"op\": \"globals\"}": {
+                "labels": {
+                  "op": "globals"
+                },
+                "count_delta": 86.0,
+                "bucket_count_delta": 86.0,
+                "sum_delta_seconds": 0.018742081,
+                "mean_seconds": 0.00021793117441860465,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.0001468,
+                    "bucket_hi": 0.0001668
+                  },
+                  "p95": {
+                    "bucket_lo": 0.0005995,
+                    "bucket_hi": 0.0006813
+                  },
+                  "p99": {
+                    "bucket_lo": 0.0006813,
+                    "bucket_hi": 0.0007743
+                  }
+                },
+                "max_bucket_hi_seconds": 0.0007743
+              },
+              "{\"op\": \"index_scan\"}": {
+                "labels": {
+                  "op": "index_scan"
+                },
+                "count_delta": 60008.0,
+                "bucket_count_delta": 60008.0,
+                "sum_delta_seconds": 30.002762055999966,
+                "mean_seconds": 0.0004999793703506193,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.0004642,
+                    "bucket_hi": 0.0005275
+                  },
+                  "p95": {
+                    "bucket_lo": 0.001,
+                    "bucket_hi": 0.001136
+                  },
+                  "p99": {
+                    "bucket_lo": 0.001136,
+                    "bucket_hi": 0.001292
+                  }
+                },
+                "max_bucket_hi_seconds": 0.007743
+              },
+              "{\"op\": \"load_documents\"}": {
+                "labels": {
+                  "op": "load_documents"
+                },
+                "count_delta": 6863.0,
+                "bucket_count_delta": 6863.0,
+                "sum_delta_seconds": 2.633586481999993,
+                "mean_seconds": 0.00038373692000582735,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.0003594,
+                    "bucket_hi": 0.0004084
+                  },
+                  "p95": {
+                    "bucket_lo": 0.0005275,
+                    "bucket_hi": 0.0005995
+                  },
+                  "p99": {
+                    "bucket_lo": 0.0006813,
+                    "bucket_hi": 0.0007743
+                  }
+                },
+                "max_bucket_hi_seconds": 0.006813
+              },
+              "{\"op\": \"previous_revisions\"}": {
+                "labels": {
+                  "op": "previous_revisions"
+                },
+                "count_delta": 31336.0,
+                "bucket_count_delta": 31336.0,
+                "sum_delta_seconds": 9.001667923000005,
+                "mean_seconds": 0.00028726282623819265,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.0002448,
+                    "bucket_hi": 0.0002783
+                  },
+                  "p95": {
+                    "bucket_lo": 0.0004084,
+                    "bucket_hi": 0.0004642
+                  },
+                  "p99": {
+                    "bucket_lo": 0.0005275,
+                    "bucket_hi": 0.0005995
+                  }
+                },
+                "max_bucket_hi_seconds": 0.006813
+              },
+              "{\"op\": \"write\"}": {
+                "labels": {
+                  "op": "write"
+                },
+                "count_delta": 13291.0,
+                "bucket_count_delta": 13291.0,
+                "sum_delta_seconds": 70.91943702099988,
+                "mean_seconds": 0.005335899256715061,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.003162,
+                    "bucket_hi": 0.003594
+                  },
+                  "p95": {
+                    "bucket_lo": 0.01292,
+                    "bucket_hi": 0.01468
+                  },
+                  "p99": {
+                    "bucket_lo": 0.01668,
+                    "bucket_hi": 0.01896
+                  }
+                },
+                "max_bucket_hi_seconds": 0.4084
+              }
+            }
+          },
+          "occRetries": 9999.0,
+          "reportedOccErrors": 9999.0,
+          "resources": {
+            "cell": "batch-5-256docs",
+            "drainSeconds": 1.4989287719999846,
+            "cpuMeanPercent": 360.71064516129036,
+            "cpuPeakPercent": 414.24,
+            "cpuSamples": 31,
+            "runtimeBusySeconds": 68.252347149,
+            "holdSeconds": 112.57619556299984,
+            "spanSeconds": 121.492,
+            "residualMeanMs": 0.39856475320004847,
+            "gapAfterSocketP95Ms": 833.1590799999959,
+            "gapAfterSocketP99Ms": 1005.8361269999991
+          },
+          "correctness": {
+            "acceptedUniqueCompletedAndAfterReopen": 20000,
+            "companies": 100,
+            "perCompany": 200,
+            "requestErrors": 0,
+            "oom": false,
+            "quickCheck": "ok",
+            "containersRemaining": 0
+          }
+        },
+        {
+          "cell": "batch-6-default",
+          "profile": "default",
+          "batchOptions": {},
+          "statsMs": {
+            "totalMs": {
+              "p50": 14979.905280000006,
+              "p95": 26927.416864999977,
+              "p99": 27203.978957999992,
+              "max": 27326.508503999998
+            },
+            "headMs": {
+              "p50": 14979.788828999997,
+              "p95": 26927.28840399999,
+              "p99": 27203.92573799999,
+              "max": 27326.48717400001
+            },
+            "handlerLogMs": {
+              "p50": 365.185,
+              "p95": 702.434,
+              "p99": 745.379,
+              "max": 912.811
+            },
+            "gapMs": {
+              "p50": 14461.26301299999,
+              "p95": 26550.571143000016,
+              "p99": 26712.190649000007,
+              "max": 26745.413419
+            },
+            "headerGapMs": {
+              "p50": 14461.036008999989,
+              "p95": 26550.49113099999,
+              "p99": 26712.148128999997,
+              "max": 26745.327149
+            },
+            "siteGapMs": {
+              "p50": 14461.26301299999,
+              "p95": 26550.571143000016,
+              "p99": 26712.190649000007,
+              "max": 26745.413419
+            },
+            "dispatchLagMs": {
+              "p50": -0.36366900001303293,
+              "p95": 0.12776899998425506,
+              "p99": 0.2829090000013821,
+              "max": 66.09799300000304
+            },
+            "socketWaitMs": {
+              "p50": 11060.215410999997,
+              "p95": 23673.357202000014,
+              "p99": 24024.304277999996,
+              "max": 24056.93306499999
+            },
+            "gapAfterSocketMs": {
+              "p50": 3305.7751549999884,
+              "p95": 3620.5820550000026,
+              "p99": 3737.668966999987,
+              "max": 3848.582935000006
+            }
+          },
+          "drainSeconds": 27.02502144499999,
+          "pendingAtStop": 3975,
+          "writeBatches": {
+            "database_write_batch_commits": {
+              "count": 12281.0,
+              "sum": 20000.0,
+              "mean": 1.628531878511522,
+              "unit": "commits"
+            },
+            "database_write_batch_documents": {
+              "count": 12281.0,
+              "sum": 1220000.0,
+              "mean": 99.34044458920283,
+              "unit": "documents"
+            },
+            "database_write_batch_bytes": {
+              "count": 12281.0,
+              "sum": 866276000.0,
+              "mean": 70537.90407947236,
+              "unit": "bytes"
+            }
+          },
+          "latencyHistograms": {
+            "database_commit_client_seconds": {
+              "{\"identity\": \"instance_admin\"}": {
+                "labels": {
+                  "identity": "instance_admin"
+                },
+                "count_delta": 0.0,
+                "bucket_count_delta": 0,
+                "sum_delta_seconds": 0.0,
+                "mean_seconds": null,
+                "percentile_buckets_seconds": {
+                  "p50": null,
+                  "p95": null,
+                  "p99": null
+                },
+                "max_bucket_hi_seconds": null
+              },
+              "{\"identity\": \"system\"}": {
+                "labels": {
+                  "identity": "system"
+                },
+                "count_delta": 18.0,
+                "bucket_count_delta": 18.0,
+                "sum_delta_seconds": 0.0014595880000000117,
+                "mean_seconds": 8.108822222222288e-05,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 3.594e-05,
+                    "bucket_hi": 4.084e-05
+                  },
+                  "p95": {
+                    "bucket_lo": 0.0004642,
+                    "bucket_hi": 0.0005275
+                  },
+                  "p99": {
+                    "bucket_lo": 0.0004642,
+                    "bucket_hi": 0.0005275
+                  }
+                },
+                "max_bucket_hi_seconds": 0.0005275
+              },
+              "{\"identity\": \"unknown\"}": {
+                "labels": {
+                  "identity": "unknown"
+                },
+                "count_delta": 30000.0,
+                "bucket_count_delta": 30000.0,
+                "sum_delta_seconds": 2195.1347233390156,
+                "mean_seconds": 0.07317115744463386,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.07743,
+                    "bucket_hi": 0.08799
+                  },
+                  "p95": {
+                    "bucket_lo": 0.1,
+                    "bucket_hi": 0.1136
+                  },
+                  "p99": {
+                    "bucket_lo": 0.1136,
+                    "bucket_hi": 0.1292
+                  }
+                },
+                "max_bucket_hi_seconds": 0.3594
+              }
+            },
+            "database_commit_seconds": {
+              "{\"status\": \"error\"}": {
+                "labels": {
+                  "status": "error"
+                },
+                "count_delta": 10000.0,
+                "bucket_count_delta": 10000.0,
+                "sum_delta_seconds": 2.0000125429999995,
+                "mean_seconds": 0.00020000125429999995,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.0001896,
+                    "bucket_hi": 0.0002154
+                  },
+                  "p95": {
+                    "bucket_lo": 0.0003162,
+                    "bucket_hi": 0.0003594
+                  },
+                  "p99": {
+                    "bucket_lo": 0.0004642,
+                    "bucket_hi": 0.0005275
+                  }
+                },
+                "max_bucket_hi_seconds": 0.002448
+              },
+              "{\"status\": \"success\"}": {
+                "labels": {
+                  "status": "success"
+                },
+                "count_delta": 20000.0,
+                "bucket_count_delta": 20000.0,
+                "sum_delta_seconds": 894.7484932999963,
+                "mean_seconds": 0.04473742466499982,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.04084,
+                    "bucket_hi": 0.04642
+                  },
+                  "p95": {
+                    "bucket_lo": 0.06813,
+                    "bucket_hi": 0.07743
+                  },
+                  "p99": {
+                    "bucket_lo": 0.06813,
+                    "bucket_hi": 0.07743
+                  }
+                },
+                "max_bucket_hi_seconds": 0.3162
+              }
+            },
+            "database_commit_queue_seconds": {
+              "{}": {
+                "labels": {},
+                "count_delta": 30018.0,
+                "bucket_count_delta": 30018.0,
+                "sum_delta_seconds": 51.16811320799956,
+                "mean_seconds": 0.0017045810249849943,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.001292,
+                    "bucket_hi": 0.001468
+                  },
+                  "p95": {
+                    "bucket_lo": 0.003594,
+                    "bucket_hi": 0.004084
+                  },
+                  "p99": {
+                    "bucket_lo": 0.005275,
+                    "bucket_hi": 0.005995
+                  }
+                },
+                "max_bucket_hi_seconds": 0.01468
+              }
+            },
+            "database_commit_persistence_write_seconds": {
+              "{\"status\": \"success\"}": {
+                "labels": {
+                  "status": "success"
+                },
+                "count_delta": 12281.0,
+                "bucket_count_delta": 12281.0,
+                "sum_delta_seconds": 506.60794308499885,
+                "mean_seconds": 0.04125135926105357,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.04084,
+                    "bucket_hi": 0.04642
+                  },
+                  "p95": {
+                    "bucket_lo": 0.05995,
+                    "bucket_hi": 0.06813
+                  },
+                  "p99": {
+                    "bucket_lo": 0.06813,
+                    "bucket_hi": 0.07743
+                  }
+                },
+                "max_bucket_hi_seconds": 0.3162
+              }
+            },
+            "sqlite_permit_wait_seconds": {
+              "{\"flavor\": \"multi\", \"op\": \"globals\"}": {
+                "labels": {
+                  "flavor": "multi",
+                  "op": "globals"
+                },
+                "count_delta": 87.0,
+                "bucket_count_delta": 87.0,
+                "sum_delta_seconds": 3.1948987049999995,
+                "mean_seconds": 0.03672297362068965,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.03594,
+                    "bucket_hi": 0.04084
+                  },
+                  "p95": {
+                    "bucket_lo": 0.05995,
+                    "bucket_hi": 0.06813
+                  },
+                  "p99": {
+                    "bucket_lo": 0.1136,
+                    "bucket_hi": 0.1292
+                  }
+                },
+                "max_bucket_hi_seconds": 0.1292
+              },
+              "{\"flavor\": \"multi\", \"op\": \"index_scan\"}": {
+                "labels": {
+                  "flavor": "multi",
+                  "op": "index_scan"
+                },
+                "count_delta": 60004.0,
+                "bucket_count_delta": 60004.0,
+                "sum_delta_seconds": 2057.687051395,
+                "mean_seconds": 0.03429249802338177,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.03162,
+                    "bucket_hi": 0.03594
+                  },
+                  "p95": {
+                    "bucket_lo": 0.05995,
+                    "bucket_hi": 0.06813
+                  },
+                  "p99": {
+                    "bucket_lo": 0.05995,
+                    "bucket_hi": 0.06813
+                  }
+                },
+                "max_bucket_hi_seconds": 0.3162
+              },
+              "{\"flavor\": \"multi\", \"op\": \"load_documents\"}": {
+                "labels": {
+                  "flavor": "multi",
+                  "op": "load_documents"
+                },
+                "count_delta": 2999.0,
+                "bucket_count_delta": 2999.0,
+                "sum_delta_seconds": 107.62425388099989,
+                "mean_seconds": 0.03588671353151047,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.03594,
+                    "bucket_hi": 0.04084
+                  },
+                  "p95": {
+                    "bucket_lo": 0.05995,
+                    "bucket_hi": 0.06813
+                  },
+                  "p99": {
+                    "bucket_lo": 0.05995,
+                    "bucket_hi": 0.06813
+                  }
+                },
+                "max_bucket_hi_seconds": 0.2783
+              },
+              "{\"flavor\": \"multi\", \"op\": \"previous_revisions\"}": {
+                "labels": {
+                  "flavor": "multi",
+                  "op": "previous_revisions"
+                },
+                "count_delta": 30578.0,
+                "bucket_count_delta": 30578.0,
+                "sum_delta_seconds": 1245.8120725580163,
+                "mean_seconds": 0.04074210453783819,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.03594,
+                    "bucket_hi": 0.04084
+                  },
+                  "p95": {
+                    "bucket_lo": 0.05995,
+                    "bucket_hi": 0.06813
+                  },
+                  "p99": {
+                    "bucket_lo": 0.06813,
+                    "bucket_hi": 0.07743
+                  }
+                },
+                "max_bucket_hi_seconds": 0.3162
+              },
+              "{\"flavor\": \"multi\", \"op\": \"write\"}": {
+                "labels": {
+                  "flavor": "multi",
+                  "op": "write"
+                },
+                "count_delta": 12281.0,
+                "bucket_count_delta": 12281.0,
+                "sum_delta_seconds": 418.4504475949995,
+                "mean_seconds": 0.03407299467429358,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.03162,
+                    "bucket_hi": 0.03594
+                  },
+                  "p95": {
+                    "bucket_lo": 0.05275,
+                    "bucket_hi": 0.05995
+                  },
+                  "p99": {
+                    "bucket_lo": 0.05995,
+                    "bucket_hi": 0.06813
+                  }
+                },
+                "max_bucket_hi_seconds": 0.2783
+              }
+            },
+            "sqlite_lock_hold_seconds": {
+              "{\"op\": \"globals\"}": {
+                "labels": {
+                  "op": "globals"
+                },
+                "count_delta": 87.0,
+                "bucket_count_delta": 87.0,
+                "sum_delta_seconds": 0.031811963999999984,
+                "mean_seconds": 0.00036565475862068947,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.0004084,
+                    "bucket_hi": 0.0004642
+                  },
+                  "p95": {
+                    "bucket_lo": 0.0007743,
+                    "bucket_hi": 0.0008799
+                  },
+                  "p99": {
+                    "bucket_lo": 0.001,
+                    "bucket_hi": 0.001136
+                  }
+                },
+                "max_bucket_hi_seconds": 0.001136
+              },
+              "{\"op\": \"index_scan\"}": {
+                "labels": {
+                  "op": "index_scan"
+                },
+                "count_delta": 60004.0,
+                "bucket_count_delta": 60004.0,
+                "sum_delta_seconds": 39.77184641299971,
+                "mean_seconds": 0.0006628199188887359,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.0005275,
+                    "bucket_hi": 0.0005995
+                  },
+                  "p95": {
+                    "bucket_lo": 0.001292,
+                    "bucket_hi": 0.001468
+                  },
+                  "p99": {
+                    "bucket_lo": 0.001468,
+                    "bucket_hi": 0.001668
+                  }
+                },
+                "max_bucket_hi_seconds": 0.007743
+              },
+              "{\"op\": \"load_documents\"}": {
+                "labels": {
+                  "op": "load_documents"
+                },
+                "count_delta": 2998.0,
+                "bucket_count_delta": 2998.0,
+                "sum_delta_seconds": 1.6622332290000046,
+                "mean_seconds": 0.0005544473745830569,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.0005275,
+                    "bucket_hi": 0.0005995
+                  },
+                  "p95": {
+                    "bucket_lo": 0.0006813,
+                    "bucket_hi": 0.0007743
+                  },
+                  "p99": {
+                    "bucket_lo": 0.0008799,
+                    "bucket_hi": 0.001
+                  }
+                },
+                "max_bucket_hi_seconds": 0.003162
+              },
+              "{\"op\": \"previous_revisions\"}": {
+                "labels": {
+                  "op": "previous_revisions"
+                },
+                "count_delta": 30578.0,
+                "bucket_count_delta": 30578.0,
+                "sum_delta_seconds": 11.546062592000018,
+                "mean_seconds": 0.00037759377958009087,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.0003594,
+                    "bucket_hi": 0.0004084
+                  },
+                  "p95": {
+                    "bucket_lo": 0.0005275,
+                    "bucket_hi": 0.0005995
+                  },
+                  "p99": {
+                    "bucket_lo": 0.0005995,
+                    "bucket_hi": 0.0006813
+                  }
+                },
+                "max_bucket_hi_seconds": 0.007743
+              },
+              "{\"op\": \"write\"}": {
+                "labels": {
+                  "op": "write"
+                },
+                "count_delta": 12281.0,
+                "bucket_count_delta": 12281.0,
+                "sum_delta_seconds": 87.55177807600018,
+                "mean_seconds": 0.0071290430808566225,
+                "percentile_buckets_seconds": {
+                  "p50": {
+                    "bucket_lo": 0.005275,
+                    "bucket_hi": 0.005995
+                  },
+                  "p95": {
+                    "bucket_lo": 0.01468,
+                    "bucket_hi": 0.01668
+                  },
+                  "p99": {
+                    "bucket_lo": 0.01668,
+                    "bucket_hi": 0.01896
+                  }
+                },
+                "max_bucket_hi_seconds": 0.2448
+              }
+            }
+          },
+          "occRetries": 10000.0,
+          "reportedOccErrors": 10000.0,
+          "resources": {
+            "cell": "batch-6-default",
+            "drainSeconds": 27.02502144499999,
+            "cpuMeanPercent": 406.87833333333333,
+            "cpuPeakPercent": 489.92,
+            "cpuSamples": 36,
+            "runtimeBusySeconds": 101.082338189,
+            "holdSeconds": 140.5637322739999,
+            "spanSeconds": 147.019,
+            "residualMeanMs": 0.6410964701958619,
+            "gapAfterSocketP95Ms": 3620.5820550000026,
+            "gapAfterSocketP99Ms": 3737.668966999987
+          },
+          "correctness": {
+            "acceptedUniqueCompletedAndAfterReopen": 20000,
+            "companies": 100,
+            "perCompany": 200,
+            "requestErrors": 0,
+            "oom": false,
+            "quickCheck": "ok",
+            "containersRemaining": 0
+          }
+        }
+      ],
+      "descriptiveMediansOnly": {
+        "default": {
+          "n": 2,
+          "drainSeconds": 45.8248619715,
+          "gapAfterSocketP95Ms": 4265.275002000006,
+          "gapAfterSocketP99Ms": 4404.361739499992
+        },
+        "256docs": {
+          "n": 2,
+          "drainSeconds": 14.798486743499991,
+          "gapAfterSocketP95Ms": 2434.4696734999943,
+          "gapAfterSocketP99Ms": 2600.8275065
+        },
+        "256docs-one-writer": {
+          "n": 2,
+          "drainSeconds": 15.444898184000007,
+          "gapAfterSocketP95Ms": 3607.3723014999946,
+          "gapAfterSocketP99Ms": 3788.107876500005
+        }
+      },
+      "notes": [
+        "Quantiles of VM histograms are bucket intervals, not interpolated points.",
+        "Drain is residual work after sender emission stops, not sustained throughput.",
+        "SIGKILL happened after all acknowledgments, not during a commit.",
+        "Request errors exclude recovered OCC attempts; those are reported separately."
+      ],
+      "decision": {
+        "imageDefaultsChanged": false,
+        "oneWriter": "Mechanism confirmed, but commit p95 increases about threefold; not a general recommendation.",
+        "256docs": "Ahead of default in both mirrored halves, but control drift and inconsistent batch-count mechanism preclude a causal throughput percentage; candidate for repeated/app testing.",
+        "operations": "Lab/manual process env only; Synapse recreate does not persist these overrides. No fleet change."
+      }
+    }
+  },
+  "limitations": [
+    "G3/P12 end-to-end deltas are inconclusive because control drift exceeds the signal.",
+    "G4 is observational; the two engines have different persisted search checkpoint states.",
+    "SIGKILL occurs after acknowledgments; no power-loss or mid-commit crash proof.",
+    "The real Uze workload and 37GB production file were not used.",
+    "Batcher profiles do not change the published image defaults. One-writer has materially worse commit tail latency; 256docs requires repetition and real-app validation."
+  ],
+  "rawEvidenceArchiveSha256": {
+    "g1": "0b1aaec6c0cdc56acdf4e102b27996bfbfc694531f69e33607d25e7106fec4b1",
+    "g3": "5311dd4c94fe20c0aec566b957b937c18ed4746138bf24178d83eed4d969037b",
+    "p12": "3c5c7c2a96bb0ce1e3b362b605535963ad36abb5db56e0ef34d128b9bdd1101f",
+    "g4": "ea23ba9e3509e12228301f9f710e67967d97877e8254b1677f3f205f4b2ec984",
+    "batching": "3652414fa82f4dd08a0c0056397030b9851c66dd30203cddbc994f09b063c036"
+  },
+  "publication": {
+    "candidate": "C5-b + P12",
+    "pullRequest": "https://github.com/Iann29/convex-backend/pull/2",
+    "digestReference": "ghcr.io/amageweb/convex-backend@sha256:fd744b3dbe917df467be827157192171e7a869da4bb87be346a35bf559df92eb",
+    "deployed": false
+  },
+  "namespaceCompute": {
+    "c5BudgetUSD": 20,
+    "maxReservedComputeUSD": 7.2,
+    "estimatedComputeUSDUpperBound": 5.5812665064,
+    "activeInstancesAfterCleanup": 0,
+    "isInvoice": false,
+    "priceSource": "https://namespace.so/pricing",
+    "priceVerifiedUTC": "2026-09-08T12:01:16.877178+00:00",
+    "billingNote": "Elapsed-time compute estimate at the recorded Namespace 16x32 rate; not an invoice and not a quote for all billing dimensions. Max reserved compute remains 7.20 USD; actual elapsed estimate is about 5.58 USD."
+  }
+}

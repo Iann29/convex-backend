@@ -1,4 +1,5 @@
 import { countFixture } from "./count-fixture.mjs";
+import { runBootProbe } from "./boot-probe.mjs";
 // Local-only HTTP contract/connection/gap probe; no published ports or external routes.
 import assert from "node:assert/strict";
 import http from "node:http";
@@ -58,6 +59,15 @@ const writeLimitMiB = Number(arg("--write-mib", "4"));
 assert([4, 16].includes(writeLimitMiB));
 const handlerDelay = Number(arg("--delay-ms", "500"));
 assert(handlerDelay >= 0 && handlerDelay <= 2000);
+const bootSearch = process.argv.includes("--boot-search");
+const batchProfile = arg("--batch-profile", "default");
+assert(["default", "256docs", "256docs-one-writer"].includes(batchProfile));
+assert(batchProfile === "default" || engine === "sqlite");
+const batchOptions = batchProfile === "default" ? {} : {
+  COMMITTER_MAX_WRITE_BATCH_DOCUMENTS: "256",
+  COMMITTER_MAX_WRITE_BATCH_BYTES: "262144",
+  ...(batchProfile === "256docs-one-writer" ? { COMMITTER_MAX_CONCURRENT_WRITE_BATCHES: "1" } : {}),
+};
 // Select logical CPUs supported by this disposable host.
 const cpuset = process.env.CANDIDATE_CPUSET;
 assert(cpuset, "Set CANDIDATE_CPUSET to allowed logical CPUs");
@@ -86,14 +96,14 @@ async function run(cmd, args, options = {}) {
     );
   }
 }
-const docker = (args) =>
+const docker = (args, options) =>
   run("sudo", [
     "-n",
     "docker",
     "--host",
     "unix:///var/run/docker.sock",
     ...args,
-  ]);
+  ], options);
 const sha = (x) => createHash("sha256").update(x).digest("hex");
 const quantile = (xs, p) => {
   const s = [...xs].sort((a, b) => a - b);
@@ -228,6 +238,7 @@ if (process.argv.includes("--driver")) {
       seedEndAt: new Date().toISOString(),
       seedRetries,
       writeLimitMiB,
+      batchProfile,
       throttleMs: 0,
     }),
   );
@@ -492,6 +503,7 @@ if (process.argv.includes("--driver")) {
     );
     await capturePg("pg-before-load");
     await captureSqlite("sqlite-before-load");
+    await captureMetrics("metrics-before-load");
     const loadStartAt = new Date().toISOString();
     const start = performance.now(),
       promises = [],
@@ -560,6 +572,7 @@ if (process.argv.includes("--driver")) {
     const requests = await Promise.all(promises);
     const drainMs = performance.now() - start - emissionStopMs;
     const loadEndAt = new Date().toISOString();
+    await captureMetrics("metrics-after-load");
     const counts = await countFixture(convex);
     const errors = requests.filter((x) => x.error);
     const recovery = await request("/audit/echo/recovery");
@@ -605,7 +618,6 @@ if (process.argv.includes("--driver")) {
         2,
       ),
     );
-    await captureMetrics("metrics-after-load");
     await delay(1500);
     await capturePg("pg-after-load");
     await captureSqlite("sqlite-after-load");
@@ -722,6 +734,7 @@ if (process.argv.includes("--driver")) {
       INSTANCE_SECRET: secret,
       MAX_BYTES_WRITTEN_PER_SECOND: String(writeLimitMiB * 2 ** 20),
       SITE_MAX_CONCURRENT_REQUESTS: String(siteSlots),
+      ...batchOptions,
       DISABLE_BEACON: "true",
       DISABLE_METRICS_ENDPOINT: "false",
       CONVEX_CLOUD_ORIGIN: "http://127.0.0.1:3210",
@@ -845,6 +858,8 @@ if (process.argv.includes("--driver")) {
           nanoCpus: info.HostConfig.NanoCpus,
           cpuset: info.HostConfig.CpusetCpus,
           writeLimitMiB,
+          batchProfile,
+          batchOptions,
           companies: 100,
           storage: "Docker anonymous volumes on instance disk",
           mounts: info.Mounts,
@@ -868,11 +883,28 @@ if (process.argv.includes("--driver")) {
       path.join(fixture, "package.json"),
       JSON.stringify({ private: true, dependencies: { convex: "*" } }),
     );
-    for (const name of ["schema.ts", "audit.ts", "http.ts"])
+    for (const name of ["schema.ts", "audit.ts", "http.ts"]) {
+      let source = await readFile(path.join(root, "bench/fixture-soak100", name), "utf8");
+      if (bootSearch && name === "schema.ts") {
+        const index = '.index("by_company_key", ["company", "key"])';
+        assert(source.includes(index));
+        source = source.replace(index,
+          index + '.searchIndex("search_body", { searchField: "body" })');
+      }
+      if (bootSearch && name === "audit.ts") {
+        const read = ".take(100);";
+        assert(source.includes(read));
+        source = source.replace(read, read + '\n    await ctx.db.patch(rows[0]._id, { body: "searchable message " + args.seq });');
+        source += `\nexport const bootRead = queryGeneric({ args: {}, handler: async (ctx) => ({
+          tenants: (await ctx.db.query("totals").collect()).length,
+          searchHits: (await ctx.db.query("items").withSearchIndex("search_body", q => q.search("body", "searchable")).take(1)).length,
+        }) });\n`;
+      }
       await writeFile(
         path.join(fixture, "convex", name),
-        await readFile(path.join(root, "bench/fixture-soak100", name)),
+        source,
       );
+    }
     const enter = [
       "-n",
       "nsenter",
@@ -974,6 +1006,8 @@ if (process.argv.includes("--driver")) {
           String(maxSockets),
           "--write-mib",
           String(writeLimitMiB),
+          "--batch-profile",
+          batchProfile,
           "--backend-cpus",
           String(backendCpus),
           "--postgres-cpus",
@@ -984,6 +1018,9 @@ if (process.argv.includes("--driver")) {
         { cwd: fixture, timeout: (seconds * 3 + 360) * 1000 },
       ),
     );
+    // Separate boot experiment: one search update per webhook; never mix its
+    // throughput with the unchanged G0/G3 fixture.
+    if (bootSearch) await runBootProbe({ docker, backend, version, out });
     // All requests are acknowledged before this crash probe; assert exact tenant totals after recovery.
     const expected = JSON.parse(
       await readFile(path.join(out, "requests.json"), "utf8"),

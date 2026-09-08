@@ -620,6 +620,24 @@ pub static GLOBAL_TASK_MANAGER: LazyLock<Mutex<TaskManager>> = LazyLock::new(|| 
     Mutex::new(manager)
 });
 
+/// Registers the Tokio runtime metrics (`tokio_workers_count`,
+/// `tokio_total_steal_count`, `tokio_total_overflow_count`,
+/// `tokio_total_park_count`, `tokio_total_busy_duration`, ...) of `handle`
+/// in the Convex registry, next to the task collector registered by
+/// [`GLOBAL_TASK_MANAGER`]. The collector samples the runtime on every
+/// scrape; the `tokio_total_*` series are cumulative and `*_depth` series are
+/// instantaneous. Registering twice is a no-op: one process has one runtime.
+pub fn register_tokio_runtime_metrics(handle: &tokio::runtime::Handle) -> anyhow::Result<()> {
+    let collector = tokio_metrics_collector::RuntimeCollector::new(
+        tokio_metrics::RuntimeMonitor::new(handle),
+        "",
+    );
+    match CONVEX_METRICS_REGISTRY.register(Box::new(collector)) {
+        Ok(()) | Err(prometheus::Error::AlreadyReg) => Ok(()),
+        Err(e) => Err(e).context("Failed to register Tokio runtime metrics"),
+    }
+}
+
 pub struct TaskManager {
     monitors: HashMap<&'static str, TaskMonitor>,
 }
