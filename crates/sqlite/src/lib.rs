@@ -62,6 +62,11 @@ use common::{
 };
 use futures::StreamExt;
 use futures_async_stream::try_stream;
+use metrics::{
+    register_convex_histogram,
+    StaticMetricLabel,
+    Timer,
+};
 use parking_lot::Mutex;
 use rusqlite::{
     params,
@@ -75,16 +80,52 @@ use serde_json::Value as JsonValue;
 
 // We only have a single Sqlite connection which does not allow async calls, so
 // we can't really make queries concurrent.
+#[derive(Clone)]
 pub struct SqlitePersistence {
     inner: Arc<Mutex<Inner>>,
+    newly_created: bool,
 }
 
 struct Inner {
-    newly_created: bool,
     connection: Connection,
 }
 
+register_convex_histogram!(
+    SQLITE_LOCK_WAIT_SECONDS,
+    "Time waiting for the SQLite connection lock",
+    &["op"]
+);
+register_convex_histogram!(
+    SQLITE_LOCK_HOLD_SECONDS,
+    "Time holding the SQLite connection lock",
+    &["op"]
+);
+
 impl SqlitePersistence {
+    async fn run<R: Send>(
+        &self,
+        _operation: &'static str,
+        f: impl FnOnce() -> anyhow::Result<R> + Send,
+    ) -> anyhow::Result<R> {
+        f()
+    }
+
+    fn with_connection<R>(
+        &self,
+        operation: &'static str,
+        f: impl FnOnce(&mut Connection) -> anyhow::Result<R>,
+    ) -> anyhow::Result<R> {
+        let mut wait_timer = Timer::new_with_labels(&SQLITE_LOCK_WAIT_SECONDS);
+        wait_timer.add_label(StaticMetricLabel::new("op", operation));
+        let mut inner = self.inner.lock();
+        drop(wait_timer);
+        let mut hold_timer = Timer::new_with_labels(&SQLITE_LOCK_HOLD_SECONDS);
+        hold_timer.add_label(StaticMetricLabel::new("op", operation));
+        let result = f(&mut inner.connection);
+        drop(inner);
+        result
+    }
+
     pub fn new(path: &str) -> anyhow::Result<Self> {
         let newly_created = !Path::new(path).exists();
         let connection = Connection::open(path)?;
@@ -93,10 +134,8 @@ impl SqlitePersistence {
         connection.execute_batch(INDEXES_INIT)?;
         connection.execute_batch(PERSISTENCE_GLOBALS_INIT)?;
         Ok(Self {
-            inner: Arc::new(Mutex::new(Inner {
-                newly_created,
-                connection,
-            })),
+            inner: Arc::new(Mutex::new(Inner { connection })),
+            newly_created,
         })
     }
 
@@ -155,19 +194,20 @@ LIMIT {page_size}
             min = range.min_timestamp_inclusive(),
             max = range.max_timestamp_exclusive(),
         );
-        let connection = &self.inner.lock().connection;
-        let mut stmt = connection.prepare(&query)?;
-        let mut page = vec![];
-        for row in stmt.query_map(&params[..], load_document_row)? {
-            let (document_id, ts, document, prev_ts) = row_to_document(row)?;
-            page.push(DocumentLogEntry {
-                ts,
-                id: document_id,
-                value: document,
-                prev_ts,
-            });
-        }
-        Ok(page)
+        self.with_connection("load_documents", |connection| {
+            let mut stmt = connection.prepare(&query)?;
+            let mut page = vec![];
+            for row in stmt.query_map(&params[..], load_document_row)? {
+                let (document_id, ts, document, prev_ts) = row_to_document(row)?;
+                page.push(DocumentLogEntry {
+                    ts,
+                    id: document_id,
+                    value: document,
+                    prev_ts,
+                });
+            }
+            Ok(page)
+        })
     }
 
     /// Stream the documents log one page at a time. As in the Postgres
@@ -190,8 +230,11 @@ LIMIT {page_size}
         let page_size = page_size.max(1) as usize;
         let mut cursor: Option<(u64, Vec<u8>, Vec<u8>)> = None;
         loop {
-            let page =
-                self._load_documents_page(tablet_id, range, order, page_size, cursor.as_ref())?;
+            let page = self
+                .run("load_documents", || {
+                    self._load_documents_page(tablet_id, range, order, page_size, cursor.as_ref())
+                })
+                .await?;
             let page_len = page.len();
             retention_validator
                 .validate_document_snapshot(range.min_timestamp_inclusive())
@@ -278,52 +321,55 @@ LIMIT {batch_size}
 "#,
         );
 
-        let connection = &self.inner.lock().connection;
-        let mut stmt = connection.prepare(&query)?;
-        let row_iter = stmt.query_map(&params[..], |row| {
-            let key = IndexKeyBytes(row.get::<_, Vec<u8>>(0)?);
-            let ts = Timestamp::try_from(row.get::<_, u64>(1)?).expect("timestamp out of bounds");
-            let document_id: Option<Vec<u8>> = row.get(2)?;
-            let table: Option<Vec<u8>> = row.get(3)?;
-            let json_value: Option<String> = row.get(4)?;
-            let prev_ts: Option<Timestamp> = row
-                .get::<_, Option<u64>>(5)?
-                .map(|ts| Timestamp::try_from(ts).expect("prev_ts out of bounds"));
-            let deleted = row.get::<_, u32>(6)? != 0;
+        self.with_connection("index_scan", |connection| {
+            let mut stmt = connection.prepare(&query)?;
+            let row_iter = stmt.query_map(&params[..], |row| {
+                let key = IndexKeyBytes(row.get::<_, Vec<u8>>(0)?);
+                let ts =
+                    Timestamp::try_from(row.get::<_, u64>(1)?).expect("timestamp out of bounds");
+                let document_id: Option<Vec<u8>> = row.get(2)?;
+                let table: Option<Vec<u8>> = row.get(3)?;
+                let json_value: Option<String> = row.get(4)?;
+                let prev_ts: Option<Timestamp> = row
+                    .get::<_, Option<u64>>(5)?
+                    .map(|ts| Timestamp::try_from(ts).expect("prev_ts out of bounds"));
+                let deleted = row.get::<_, u32>(6)? != 0;
 
-            Ok((key, ts, document_id, table, json_value, prev_ts, deleted))
-        })?;
-        let mut page = vec![];
-        for row in row_iter {
-            let (key, ts, document_id, table, json_value, prev_ts, deleted) = row?;
-            if deleted {
-                page.push((key, None));
-                continue;
+                Ok((key, ts, document_id, table, json_value, prev_ts, deleted))
+            })?;
+            let mut page = vec![];
+            for row in row_iter {
+                let (key, ts, document_id, table, json_value, prev_ts, deleted) = row?;
+                if deleted {
+                    page.push((key, None));
+                    continue;
+                }
+                let table = table.ok_or_else(|| {
+                    anyhow::anyhow!("Dangling index reference for {:?} {:?}", key, ts)
+                })?;
+                let table = TabletId(table.try_into()?);
+                let document_id = document_id.ok_or_else(|| {
+                    anyhow::anyhow!("Dangling index reference for {:?} {:?}", key, ts)
+                })?;
+                let _document_id =
+                    InternalDocumentId::new(table, InternalId::try_from(document_id)?);
+                let json_value = json_value.ok_or_else(|| {
+                    anyhow::anyhow!("Index reference to deleted document {:?} {:?}", key, ts)
+                })?;
+                let json_value: serde_json::Value = serde_json::from_str(&json_value)?;
+                let value: ConvexValue = json_value.try_into()?;
+                let document = ResolvedDocument::from_database(tablet_id, value)?;
+                page.push((
+                    key,
+                    Some(LatestDocument {
+                        ts,
+                        value: document,
+                        prev_ts,
+                    }),
+                ));
             }
-            let table = table.ok_or_else(|| {
-                anyhow::anyhow!("Dangling index reference for {:?} {:?}", key, ts)
-            })?;
-            let table = TabletId(table.try_into()?);
-            let document_id = document_id.ok_or_else(|| {
-                anyhow::anyhow!("Dangling index reference for {:?} {:?}", key, ts)
-            })?;
-            let _document_id = InternalDocumentId::new(table, InternalId::try_from(document_id)?);
-            let json_value = json_value.ok_or_else(|| {
-                anyhow::anyhow!("Index reference to deleted document {:?} {:?}", key, ts)
-            })?;
-            let json_value: serde_json::Value = serde_json::from_str(&json_value)?;
-            let value: ConvexValue = json_value.try_into()?;
-            let document = ResolvedDocument::from_database(tablet_id, value)?;
-            page.push((
-                key,
-                Some(LatestDocument {
-                    ts,
-                    value: document,
-                    prev_ts,
-                }),
-            ));
-        }
-        Ok(page)
+            Ok(page)
+        })
     }
 
     /// Stream an index scan one page at a time. The snapshot is validated
@@ -344,15 +390,19 @@ LIMIT {batch_size}
     ) {
         let mut cursor: Option<IndexKeyBytes> = None;
         loop {
-            let page = self._index_scan_page(
-                index_id,
-                tablet_id,
-                read_timestamp,
-                &interval,
-                order,
-                batch_size,
-                cursor.as_ref(),
-            )?;
+            let page = self
+                .run("index_scan", || {
+                    self._index_scan_page(
+                        index_id,
+                        tablet_id,
+                        read_timestamp,
+                        &interval,
+                        order,
+                        batch_size,
+                        cursor.as_ref(),
+                    )
+                })
+                .await?;
             let page_len = page.len();
             retention_validator
                 .validate_snapshot(read_timestamp)
@@ -373,65 +423,70 @@ LIMIT {batch_size}
         &self,
         key: PersistenceGlobalKey,
     ) -> anyhow::Result<Option<JsonValue>> {
-        let connection = &self.inner.lock().connection;
-        let mut stmt = connection.prepare(GET_PERSISTENCE_GLOBAL)?;
-        let key = String::from(key);
-        let params: Vec<&dyn ToSql> = vec![&key];
-        let mut row_iter = stmt.query_map(&params[..], |row| {
-            let json_value_str: String = row.get(0)?;
-            Ok(json_value_str)
-        })?;
-        row_iter
-            .next()
-            .map(|json_value_str| {
-                let json_value_str = json_value_str?;
-                let mut json_deserializer = serde_json::Deserializer::from_str(&json_value_str);
-                // XXX: this is bad, but shapes can get much more nested than convex values
-                json_deserializer.disable_recursion_limit();
-                let json_value = JsonValue::deserialize(&mut json_deserializer)
-                    .with_context(|| format!("Invalid JSON at persistence key {key:?}"))?;
-                json_deserializer.end()?;
-                Ok(json_value)
-            })
-            .transpose()
+        self.with_connection("globals", |connection| {
+            let mut stmt = connection.prepare(GET_PERSISTENCE_GLOBAL)?;
+            let key = String::from(key);
+            let params: Vec<&dyn ToSql> = vec![&key];
+            let mut row_iter = stmt.query_map(&params[..], |row| {
+                let json_value_str: String = row.get(0)?;
+                Ok(json_value_str)
+            })?;
+            row_iter
+                .next()
+                .map(|json_value_str| {
+                    let json_value_str = json_value_str?;
+                    let mut json_deserializer = serde_json::Deserializer::from_str(&json_value_str);
+                    // XXX: this is bad, but shapes can get much more nested than convex values
+                    json_deserializer.disable_recursion_limit();
+                    let json_value = JsonValue::deserialize(&mut json_deserializer)
+                        .with_context(|| format!("Invalid JSON at persistence key {key:?}"))?;
+                    json_deserializer.end()?;
+                    Ok(json_value)
+                })
+                .transpose()
+        })
     }
 }
 
 #[async_trait]
 impl IndexRowPersistence for SqlitePersistence {
     async fn delete_index_rows(&self, expired_rows: Vec<IndexEntry>) -> anyhow::Result<usize> {
-        let mut inner = self.inner.lock();
-        let tx = inner.connection.transaction()?;
-        let mut delete_index_query = tx.prepare_cached(DELETE_INDEX)?;
-        let mut count_deleted = 0;
+        self.run("delete", || {
+            self.with_connection("delete", |connection| {
+                let tx = connection.transaction()?;
+                let mut delete_index_query = tx.prepare_cached(DELETE_INDEX)?;
+                let mut count_deleted = 0;
 
-        for IndexEntry {
-            index_id,
-            key_prefix,
-            ts,
-            ..
-        } in expired_rows
-        {
-            count_deleted +=
-                delete_index_query
-                    .execute(params![&index_id.0[..], &u64::from(ts), key_prefix,])?;
-        }
-        drop(delete_index_query);
-        tx.commit()?;
-        Ok(count_deleted)
+                for IndexEntry {
+                    index_id,
+                    key_prefix,
+                    ts,
+                    ..
+                } in expired_rows
+                {
+                    count_deleted += delete_index_query.execute(params![
+                        &index_id.0[..],
+                        &u64::from(ts),
+                        key_prefix,
+                    ])?;
+                }
+                drop(delete_index_query);
+                tx.commit()?;
+                Ok(count_deleted)
+            })
+        })
+        .await
     }
 }
 
 #[async_trait]
 impl Persistence for SqlitePersistence {
     fn is_fresh(&self) -> bool {
-        self.inner.lock().newly_created
+        self.newly_created
     }
 
     fn reader(&self) -> Arc<dyn PersistenceReader> {
-        Arc::new(Self {
-            inner: self.inner.clone(),
-        })
+        Arc::new(self.clone())
     }
 
     async fn write<'a>(
@@ -440,67 +495,71 @@ impl Persistence for SqlitePersistence {
         indexes: &'a [PersistenceIndexEntry],
         conflict_strategy: ConflictStrategy,
     ) -> anyhow::Result<()> {
-        let mut inner = self.inner.lock();
-        let tx = inner.connection.transaction()?;
-        let mut insert_document_query = match conflict_strategy {
-            ConflictStrategy::Error => tx.prepare_cached(INSERT_DOCUMENT)?,
-            ConflictStrategy::Overwrite => tx.prepare_cached(INSERT_OVERWRITE_DOCUMENT)?,
-        };
+        self.run("write", || {
+            self.with_connection("write", |connection| {
+                let tx = connection.transaction()?;
+                let mut insert_document_query = match conflict_strategy {
+                    ConflictStrategy::Error => tx.prepare_cached(INSERT_DOCUMENT)?,
+                    ConflictStrategy::Overwrite => tx.prepare_cached(INSERT_OVERWRITE_DOCUMENT)?,
+                };
 
-        for update in documents {
-            let (json_value, deleted) = if let Some(document) = &update.value {
-                assert_eq!(update.id, document.id_with_table_id());
-                let json_value = document.value().json_serialize()?;
-                (Some(json_value), 0)
-            } else {
-                (None, 1)
-            };
-            insert_document_query.execute(params![
-                &update.id.internal_id()[..],
-                &u64::from(update.ts),
-                &update.id.table().0[..],
-                &json_value,
-                &deleted,
-                &update.prev_ts.map(u64::from),
-            ])?;
-        }
-        drop(insert_document_query);
-
-        let mut insert_index_query = if conflict_strategy == ConflictStrategy::Overwrite {
-            tx.prepare_cached(INSERT_OVERWRITE_INDEX)?
-        } else {
-            tx.prepare_cached(INSERT_INDEX)?
-        };
-        for update in indexes {
-            let index_id = update.index_id;
-            let key: &[u8] = &update.key.0;
-            match update.value {
-                None => {
-                    insert_index_query.execute(params![
-                        &index_id.0[..],
+                for update in documents {
+                    let (json_value, deleted) = if let Some(document) = &update.value {
+                        assert_eq!(update.id, document.id_with_table_id());
+                        let json_value = document.value().json_serialize()?;
+                        (Some(json_value), 0)
+                    } else {
+                        (None, 1)
+                    };
+                    insert_document_query.execute(params![
+                        &update.id.internal_id()[..],
                         &u64::from(update.ts),
-                        key,
-                        &1,
-                        &Null,
-                        &Null,
+                        &update.id.table().0[..],
+                        &json_value,
+                        &deleted,
+                        &update.prev_ts.map(u64::from),
                     ])?;
-                },
-                Some(doc_id) => {
-                    insert_index_query.execute(params![
-                        &index_id.0[..],
-                        &u64::from(update.ts),
-                        key,
-                        &0,
-                        &doc_id.table().0[..],
-                        &doc_id.internal_id()[..],
-                    ])?;
-                },
-            };
-        }
-        drop(insert_index_query);
+                }
+                drop(insert_document_query);
 
-        tx.commit()?;
-        Ok(())
+                let mut insert_index_query = if conflict_strategy == ConflictStrategy::Overwrite {
+                    tx.prepare_cached(INSERT_OVERWRITE_INDEX)?
+                } else {
+                    tx.prepare_cached(INSERT_INDEX)?
+                };
+                for update in indexes {
+                    let index_id = update.index_id;
+                    let key: &[u8] = &update.key.0;
+                    match update.value {
+                        None => {
+                            insert_index_query.execute(params![
+                                &index_id.0[..],
+                                &u64::from(update.ts),
+                                key,
+                                &1,
+                                &Null,
+                                &Null,
+                            ])?;
+                        },
+                        Some(doc_id) => {
+                            insert_index_query.execute(params![
+                                &index_id.0[..],
+                                &u64::from(update.ts),
+                                key,
+                                &0,
+                                &doc_id.table().0[..],
+                                &doc_id.internal_id()[..],
+                            ])?;
+                        },
+                    };
+                }
+                drop(insert_index_query);
+
+                tx.commit()?;
+                Ok(())
+            })
+        })
+        .await
     }
 
     async fn write_persistence_global(
@@ -508,19 +567,27 @@ impl Persistence for SqlitePersistence {
         key: PersistenceGlobalKey,
         value: JsonValue,
     ) -> anyhow::Result<()> {
-        let mut inner = self.inner.lock();
-        let tx = inner.connection.transaction()?;
-        let mut write_query = tx.prepare_cached(WRITE_PERSISTENCE_GLOBAL)?;
-        let json_value = serde_json::to_string(&value)?;
-        write_query.execute(params![&String::from(key), &json_value])?;
-        drop(write_query);
-        tx.commit()?;
-        Ok(())
+        self.run("globals", || {
+            self.with_connection("globals", |connection| {
+                let tx = connection.transaction()?;
+                let mut write_query = tx.prepare_cached(WRITE_PERSISTENCE_GLOBAL)?;
+                let json_value = serde_json::to_string(&value)?;
+                write_query.execute(params![&String::from(key), &json_value])?;
+                drop(write_query);
+                tx.commit()?;
+                Ok(())
+            })
+        })
+        .await
     }
 
     async fn has_index_entries(&self) -> anyhow::Result<bool> {
-        let connection = &self.inner.lock().connection;
-        Ok(connection.prepare(HAS_INDEX_ENTRIES)?.exists([])?)
+        self.run("has_index_entries", || {
+            self.with_connection("has_index_entries", |connection| {
+                Ok(connection.prepare(HAS_INDEX_ENTRIES)?.exists([])?)
+            })
+        })
+        .await
     }
 
     async fn reclaim_index_history(
@@ -534,23 +601,27 @@ impl Persistence for SqlitePersistence {
         &self,
         documents: Vec<(Timestamp, InternalDocumentId)>,
     ) -> anyhow::Result<usize> {
-        let mut inner = self.inner.lock();
-        let tx = inner.connection.transaction()?;
-        let mut delete_document_query = tx.prepare_cached(DELETE_DOCUMENT)?;
-        let mut count_deleted = 0;
+        self.run("delete", || {
+            self.with_connection("delete", |connection| {
+                let tx = connection.transaction()?;
+                let mut delete_document_query = tx.prepare_cached(DELETE_DOCUMENT)?;
+                let mut count_deleted = 0;
 
-        for (ts, internal_id) in documents {
-            let tablet_id: TabletId = internal_id.table();
-            let id = internal_id.internal_id();
-            count_deleted += delete_document_query.execute(params![
-                &tablet_id.0[..],
-                &id[..],
-                &u64::from(ts),
-            ])?;
-        }
-        drop(delete_document_query);
-        tx.commit()?;
-        Ok(count_deleted)
+                for (ts, internal_id) in documents {
+                    let tablet_id: TabletId = internal_id.table();
+                    let id = internal_id.internal_id();
+                    count_deleted += delete_document_query.execute(params![
+                        &tablet_id.0[..],
+                        &id[..],
+                        &u64::from(ts),
+                    ])?;
+                }
+                drop(delete_document_query);
+                tx.commit()?;
+                Ok(count_deleted)
+            })
+        })
+        .await
     }
 
     async fn delete_tablet_documents(
@@ -558,17 +629,21 @@ impl Persistence for SqlitePersistence {
         tablet_id: TabletId,
         chunk_size: usize,
     ) -> anyhow::Result<usize> {
-        let mut inner = self.inner.lock();
-        let tx = inner.connection.transaction()?;
-        let mut delete_table_documents_query = tx.prepare_cached(DELETE_TABLE_DOCUMENTS)?;
-        let count_deleted = delete_table_documents_query.execute(params![
-            &tablet_id.0[..],
-            &tablet_id.0[..],
-            chunk_size,
-        ])?;
-        drop(delete_table_documents_query);
-        tx.commit()?;
-        Ok(count_deleted)
+        self.run("delete", || {
+            self.with_connection("delete", |connection| {
+                let tx = connection.transaction()?;
+                let mut delete_table_documents_query = tx.prepare_cached(DELETE_TABLE_DOCUMENTS)?;
+                let count_deleted = delete_table_documents_query.execute(params![
+                    &tablet_id.0[..],
+                    &tablet_id.0[..],
+                    chunk_size,
+                ])?;
+                drop(delete_table_documents_query);
+                tx.commit()?;
+                Ok(count_deleted)
+            })
+        })
+        .await
     }
 }
 
@@ -612,28 +687,31 @@ impl PersistenceReader for SqlitePersistence {
     ) -> anyhow::Result<BTreeMap<(InternalDocumentId, Timestamp), DocumentLogEntry>> {
         let mut out = BTreeMap::new();
         let mut min_ts = Timestamp::MAX;
-        {
-            let inner = self.inner.lock();
-            for (id, ts) in ids {
-                min_ts = cmp::min(ts, min_ts);
-                let mut stmt = inner.connection.prepare(PREV_REV_QUERY)?;
-                let internal_id = id.internal_id();
-                let params = params![&id.table().0[..], &internal_id[..], &u64::from(ts)];
-                let mut row_iter = stmt.query_map(params, load_document_row)?;
-                if let Some(row) = row_iter.next() {
-                    let (document_id, prev_ts, document, prev_prev_ts) = row_to_document(row)?;
-                    out.insert(
-                        (document_id, ts),
-                        DocumentLogEntry {
-                            ts: prev_ts,
-                            id: document_id,
-                            value: document,
-                            prev_ts: prev_prev_ts,
-                        },
-                    );
+        self.run("previous_revisions", || {
+            self.with_connection("previous_revisions", |connection| {
+                for (id, ts) in ids {
+                    min_ts = cmp::min(ts, min_ts);
+                    let mut stmt = connection.prepare(PREV_REV_QUERY)?;
+                    let internal_id = id.internal_id();
+                    let params = params![&id.table().0[..], &internal_id[..], &u64::from(ts)];
+                    let mut row_iter = stmt.query_map(params, load_document_row)?;
+                    if let Some(row) = row_iter.next() {
+                        let (document_id, prev_ts, document, prev_prev_ts) = row_to_document(row)?;
+                        out.insert(
+                            (document_id, ts),
+                            DocumentLogEntry {
+                                ts: prev_ts,
+                                id: document_id,
+                                value: document,
+                                prev_ts: prev_prev_ts,
+                            },
+                        );
+                    }
                 }
-            }
-        }
+                Ok(())
+            })
+        })
+        .await?;
         retention_validator
             .validate_document_snapshot(min_ts)
             .await?;
@@ -649,31 +727,34 @@ impl PersistenceReader for SqlitePersistence {
         let min_ts = ids.iter().map(|DocumentPrevTsQuery { ts, .. }| *ts).min();
 
         let mut out = BTreeMap::new();
-        {
-            let inner = self.inner.lock();
-            for DocumentPrevTsQuery { id, ts, prev_ts } in ids {
-                let mut stmt = inner.connection.prepare(EXACT_REV_QUERY)?;
-                let internal_id = id.internal_id();
-                let params = params![&id.table().0[..], &internal_id[..], &u64::from(prev_ts)];
-                let mut row_iter = stmt.query_map(params, load_document_row)?;
-                if let Some(row) = row_iter.next() {
-                    let (document_id, prev_ts, document, prev_prev_ts) = row_to_document(row)?;
-                    out.insert(
-                        DocumentPrevTsQuery {
-                            id: document_id,
-                            ts,
-                            prev_ts,
-                        },
-                        DocumentLogEntry {
-                            ts: prev_ts,
-                            id: document_id,
-                            value: document,
-                            prev_ts: prev_prev_ts,
-                        },
-                    );
+        self.run("previous_revisions", || {
+            self.with_connection("previous_revisions", |connection| {
+                for DocumentPrevTsQuery { id, ts, prev_ts } in ids {
+                    let mut stmt = connection.prepare(EXACT_REV_QUERY)?;
+                    let internal_id = id.internal_id();
+                    let params = params![&id.table().0[..], &internal_id[..], &u64::from(prev_ts)];
+                    let mut row_iter = stmt.query_map(params, load_document_row)?;
+                    if let Some(row) = row_iter.next() {
+                        let (document_id, prev_ts, document, prev_prev_ts) = row_to_document(row)?;
+                        out.insert(
+                            DocumentPrevTsQuery {
+                                id: document_id,
+                                ts,
+                                prev_ts,
+                            },
+                            DocumentLogEntry {
+                                ts: prev_ts,
+                                id: document_id,
+                                value: document,
+                                prev_ts: prev_prev_ts,
+                            },
+                        );
+                    }
                 }
-            }
-        }
+                Ok(())
+            })
+        })
+        .await?;
         if let Some(min_ts) = min_ts {
             retention_validator
                 .validate_document_snapshot(min_ts)
@@ -712,7 +793,8 @@ impl PersistenceReader for SqlitePersistence {
         &self,
         key: PersistenceGlobalKey,
     ) -> anyhow::Result<Option<JsonValue>> {
-        self._get_persistence_global(key)
+        self.run("globals", || self._get_persistence_global(key))
+            .await
     }
 
     fn version(&self) -> PersistenceVersion {

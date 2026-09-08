@@ -17,6 +17,7 @@ async-trait = { workspace = true }
 common = { workspace = true }
 futures = { workspace = true }
 futures-async-stream = { workspace = true }
+metrics = { workspace = true }
 parking_lot = { workspace = true }
 rusqlite = { workspace = true }
 serde = { workspace = true }

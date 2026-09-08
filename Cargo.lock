@@ -9761,6 +9761,7 @@ dependencies = [
  "common",
  "futures",
  "futures-async-stream",
+ "metrics",
  "parking_lot",
  "rusqlite",
  "serde",
