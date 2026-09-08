@@ -130,6 +130,9 @@ pub(crate) const SCHEDULED_JOB_WRITE_THROUGHPUT_ERROR: &str =
     "scheduled_job_write_throughput_error";
 pub(crate) const SCHEDULED_JOB_SUCCEEDED: &str = "scheduled_job_succeeded";
 pub(crate) const SCHEDULED_JOB_QUERIED: &str = "scheduled_job_queried";
+/// Short message of the error raised when a UDF exceeds
+/// `DATABASE_UDF_SYSTEM_TIMEOUT` (see `isolate::termination`).
+const SYSTEM_TIMEOUT_SHORT_MSG: &str = "SystemTimeoutError";
 pub(crate) const SCHEDULER_STARTED: &str = "scheduler_started";
 
 #[derive(Clone)]
@@ -861,11 +864,26 @@ impl<RT: Runtime> ScheduledJobContext<RT> {
                         let delay = backoff.fail(&mut self.rt.rng());
                         self.rt.wait(delay).await;
                         continue;
-                    } else if e.is_deterministic_user_error() {
+                    } else if e.is_deterministic_user_error()
+                        && e.short_msg() != SYSTEM_TIMEOUT_SHORT_MSG
+                    {
                         // A deterministic user error fails the same way on every attempt.
                         // Synthesize a failed outcome so the failure path
                         // below completes the job as failed instead of
                         // rescheduling it like a transient system error.
+                        //
+                        // A system timeout is tagged as a bad request because
+                        // some functions hit it deterministically (see the
+                        // note on `IsolateTerminationReason::SystemTimeout`),
+                        // but for a scheduled mutation it also fires under
+                        // transient database pressure, and nothing was
+                        // committed either way. It takes the system-error
+                        // path below: the job is rescheduled with the
+                        // existing exponential backoff (up to
+                        // `SCHEDULED_JOB_MAX_BACKOFF`), every attempt is
+                        // logged and counted, and a job that keeps timing
+                        // out stays visible as repeated failures rather than
+                        // silently ending the chain it was scheduling.
                         let outcome = ValidatedUdfOutcome::from_error(
                             JsError::from_error(e),
                             path,
