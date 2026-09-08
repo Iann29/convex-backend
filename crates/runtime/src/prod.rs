@@ -26,6 +26,7 @@ use common::{
     runtime::{
         propagate_tracing,
         propagate_tracing_blocking,
+        register_tokio_runtime_metrics,
         JoinError,
         Runtime,
         SpawnHandle,
@@ -163,6 +164,7 @@ impl ProdRuntime {
             tokio_builder.disable_lifo_slot();
         }
         let tokio_rt = tokio_builder.enable_all().build()?;
+        register_tokio_runtime_metrics(tokio_rt.handle())?;
 
         // Register a no-op SIGUSR1 handler so services don't crash when
         // receiving an unintended signal (the default disposition is to
