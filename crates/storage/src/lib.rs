@@ -92,7 +92,6 @@ use value::sha256::{
 
 pub const LOCAL_DIR_MIN_PART_SIZE: usize = 5 * (1 << 20);
 pub const LOCAL_DIR_MAX_PART_SIZE: usize = 8 * (1 << 30);
-pub const MAX_NUM_PARTS: usize = 10000;
 pub const MAXIMUM_PARALLEL_UPLOADS: usize = 8;
 
 #[derive(Clone, Eq, PartialEq, PartialOrd, Ord, derive_more::Display)]
@@ -936,9 +935,10 @@ impl<RT: Runtime> Storage for LocalDirStorage<RT> {
         let upload = LocalDirUpload {
             object_key,
             file: Some(file),
-            num_parts: 0,
         };
-        let upload = BufferedUpload::new(upload, LOCAL_DIR_MIN_PART_SIZE, LOCAL_DIR_MAX_PART_SIZE);
+        // Local files have no multipart-count limit. Keep chunks small instead of
+        // growing them toward the maximum accepted write size as an upload grows.
+        let upload = BufferedUpload::new(upload, LOCAL_DIR_MIN_PART_SIZE, LOCAL_DIR_MIN_PART_SIZE);
         Ok(Box::new(upload))
     }
 
@@ -982,7 +982,6 @@ impl<RT: Runtime> Storage for LocalDirStorage<RT> {
         let mut upload = LocalDirUpload {
             object_key,
             file: Some(file),
-            num_parts: 0, // unused
         };
         upload.write(part).await?;
         Ok(ClientDrivenUploadPartToken(String::new()))
@@ -1071,15 +1070,15 @@ impl<RT: Runtime> Storage for LocalDirStorage<RT> {
         key: &FullyQualifiedObjectKey,
     ) -> anyhow::Result<Option<ObjectAttributes>> {
         let path = Path::new(key.as_str());
-        let mut buf = vec![];
-        let result = File::open(path);
-        if result.is_err() {
-            return Ok(None);
-        }
-        let mut file = result.unwrap();
-        file.read_to_end(&mut buf)?;
+        // Export completion and range reads only need the size, never the bytes.
+        let metadata = match fs::metadata(path) {
+            Ok(metadata) => metadata,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(err).context("Local storage object metadata failed"),
+        };
+        anyhow::ensure!(metadata.is_file(), "Local storage object is not a file");
         Ok(Some(ObjectAttributes {
-            size: buf.len() as u64,
+            size: metadata.len(),
         }))
     }
 
@@ -1151,13 +1150,11 @@ impl<RT: Runtime> Storage for LocalDirStorage<RT> {
 pub struct LocalDirUpload {
     object_key: ObjectKey,
     file: Option<File>,
-    num_parts: usize,
 }
 
 #[async_trait]
 impl Upload for LocalDirUpload {
     async fn write(&mut self, data: Bytes) -> anyhow::Result<()> {
-        anyhow::ensure!(self.num_parts < MAX_NUM_PARTS);
         anyhow::ensure!(data.len() <= LOCAL_DIR_MAX_PART_SIZE);
         let file = self
             .file
@@ -1165,8 +1162,6 @@ impl Upload for LocalDirUpload {
             .ok_or_else(|| anyhow::anyhow!("Upload not active"))?;
 
         file.write_all(&data)?;
-
-        self.num_parts += 1;
 
         Ok(())
     }
@@ -1220,5 +1215,132 @@ impl Display for StorageUseCase {
             StorageUseCase::Files => write!(f, "files"),
             StorageUseCase::SearchIndexes => write!(f, "search"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use runtime::prod::ProdRuntime;
+
+    use super::*;
+
+    fn local_storage() -> anyhow::Result<(tokio::runtime::Runtime, LocalDirStorage<ProdRuntime>)> {
+        let tokio = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let storage = LocalDirStorage::new(ProdRuntime::new(&tokio))?;
+        Ok((tokio, storage))
+    }
+
+    #[test]
+    fn local_upload_buffer_stays_bounded() -> anyhow::Result<()> {
+        let (tokio, storage) = local_storage()?;
+        tokio.block_on(async {
+            let mut upload = storage.start_upload().await?;
+            upload
+                .write(Bytes::from(vec![7; LOCAL_DIR_MIN_PART_SIZE]))
+                .await?;
+            assert!(upload.target_intermediate_part_size <= LOCAL_DIR_MIN_PART_SIZE);
+            assert!(upload.max_intermediate_part_size <= LOCAL_DIR_MIN_PART_SIZE);
+            upload.abort().await
+        })
+    }
+
+    #[test]
+    fn local_upload_has_no_multipart_count_limit() -> anyhow::Result<()> {
+        let (tokio, storage) = local_storage()?;
+        tokio.block_on(async {
+            let mut upload = storage.start_upload().await?;
+            // The underlying file writer must also work beyond S3's 10,000-part limit.
+            for _ in 0..10_001 {
+                upload.upload.write(Bytes::from_static(b"x")).await?;
+            }
+            let key = upload.complete().await?;
+            assert_eq!(
+                fs::read(storage.fully_qualified_key(&key).as_str())?,
+                vec![b'x'; 10_001]
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn local_upload_parallel_preserves_bytes() -> anyhow::Result<()> {
+        let (tokio, storage) = local_storage()?;
+        tokio.block_on(async {
+            let mut upload = storage.start_upload().await?;
+            let chunks: Vec<_> = [0, 1, 2, 3]
+                .into_iter()
+                .map(|value| Bytes::from(vec![value; LOCAL_DIR_MIN_PART_SIZE + 17]))
+                .collect();
+            let expected: Vec<_> = chunks
+                .iter()
+                .flat_map(|chunk| chunk.iter().copied())
+                .collect();
+            let (size, hash) = upload
+                .try_write_parallel_and_hash(stream::iter(chunks.into_iter().map(Ok)))
+                .await?;
+            let key = upload.complete().await?;
+            assert_eq!(size, expected.len());
+            let mut expected_hash = Sha256::new();
+            expected_hash.update(&expected);
+            assert_eq!(hash, expected_hash.finalize());
+            assert_eq!(
+                fs::read(storage.fully_qualified_key(&key).as_str())?,
+                expected
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn local_object_attributes() -> anyhow::Result<()> {
+        let (tokio, storage) = local_storage()?;
+        tokio.block_on(async {
+            let key: ObjectKey = "attributes".try_into()?;
+            assert!(storage.get_object_attributes(&key).await?.is_none());
+            for contents in [Bytes::new(), Bytes::from_static(b"test contents")] {
+                storage.put_object(key.clone(), contents.clone()).await?;
+                assert_eq!(
+                    storage.get_object_attributes(&key).await?.unwrap().size,
+                    contents.len() as u64
+                );
+            }
+            let directory_key: ObjectKey = "directory".try_into()?;
+            fs::create_dir(storage.fully_qualified_key(&directory_key).as_str())?;
+            assert!(storage.get_object_attributes(&directory_key).await.is_err());
+            Ok(())
+        })
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_object_attributes_preserve_io_errors() -> anyhow::Result<()> {
+        let (tokio, storage) = local_storage()?;
+        tokio.block_on(async {
+            let key: ObjectKey = "loop".try_into()?;
+            let path = storage.fully_qualified_key(&key);
+            std::os::unix::fs::symlink(path.as_str(), path.as_str())?;
+            assert!(storage.get_object_attributes(&key).await.is_err());
+            Ok(())
+        })
+    }
+
+    // A regression would try to allocate the whole file. Run this explicitly
+    // under a process address-space limit; the sparse fixture uses no data blocks.
+    #[test]
+    #[ignore = "run the test binary with prlimit --as=1073741824 --core=0"]
+    fn local_large_object_attributes_without_reading_contents() -> anyhow::Result<()> {
+        let (tokio, storage) = local_storage()?;
+        tokio.block_on(async {
+            let key: ObjectKey = "large".try_into()?;
+            let size = 48 * (1u64 << 30);
+            File::create(storage.fully_qualified_key(&key).as_str())?.set_len(size)?;
+            assert_eq!(
+                storage.get_object_attributes(&key).await?.unwrap().size,
+                size
+            );
+            Ok(())
+        })
     }
 }
