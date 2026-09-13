@@ -139,7 +139,8 @@ pub async fn cancel_job(
     identity.require_operation(keybroker::DeploymentOp::WriteData)?;
     let component_id =
         ComponentId::deserialize_from_string(cancel_job_request.component_id.as_deref())?;
-    st.application
+    let changed = st
+        .application
         .execute_with_audit_log_events_and_occ_retries(
             identity.clone(),
             request_metadata,
@@ -159,10 +160,10 @@ pub async fn cancel_job(
                         Some(job.path.udf_path.to_string())
                     });
                     let mut model = SchedulerModel::new(tx, namespace);
-                    model.cancel(id).await?;
+                    let changed = model.cancel(id).await?;
                     let component = tx.must_component_path(component_id)?;
                     Ok((
-                        (),
+                        changed,
                         vec![DeploymentAuditLogEvent::CancelScheduledFunction {
                             component_id: component_id.serialize_to_string(),
                             component,
@@ -175,6 +176,11 @@ pub async fn cancel_job(
             },
         )
         .await?;
+    if changed {
+        st.application
+            .explain_recorder()
+            .record_scheduled_canceled(&cancel_job_request.id, None);
+    }
 
     Ok(StatusCode::OK)
 }

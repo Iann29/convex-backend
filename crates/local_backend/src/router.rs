@@ -13,6 +13,7 @@ use axum::{
         get,
         post,
         put,
+        MethodRouter,
     },
     Router,
 };
@@ -38,6 +39,10 @@ use http::{
 use metrics::SERVER_VERSION_STR;
 use tower::ServiceBuilder;
 use tower_http::{
+    compression::{
+        CompressionLayer,
+        CompressionLevel,
+    },
     cors::{
         AllowHeaders,
         AllowOrigin,
@@ -282,6 +287,23 @@ struct PublicApiDoc;
 )]
 struct DashboardApiDoc;
 
+// Only bounded GET/DELETE snapshots use response compression. Authentication
+// and the recorder's decoded event/byte limits remain inside the existing
+// handlers.
+fn compress_explain_snapshots<S>(routes: MethodRouter<S>) -> MethodRouter<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
+    routes.route_layer(
+        CompressionLayer::new()
+            .gzip(true)
+            .no_br()
+            .no_deflate()
+            .no_zstd()
+            .quality(CompressionLevel::Fastest),
+    )
+}
+
 pub fn router(st: LocalAppState) -> Router {
     let browser_routes = Router::new()
         // Called by the browser (and optionally authenticated by a cookie or `Authorization`
@@ -351,6 +373,11 @@ pub fn router(st: LocalAppState) -> Router {
         .route("/schema_state/{schema_id}", get(schema_state))
         .route("/stream_udf_execution", get(stream_udf_execution))
         .route("/stream_function_logs", get(stream_function_logs))
+        .route("/explain/sessions", post(crate::explain::start))
+        .route(
+            "/explain/sessions/{session_id}",
+            compress_explain_snapshots(get(crate::explain::poll).delete(crate::explain::stop)),
+        )
         .merge(import_routes())
         .layer(cli_cors());
 
@@ -625,3 +652,7 @@ pub fn cors() -> CorsLayer {
         .allow_origin(AllowOrigin::mirror_request())
         .max_age(Duration::from_secs(86400))
 }
+
+#[cfg(test)]
+#[path = "router/explain_compression_tests.rs"]
+mod explain_compression_tests;

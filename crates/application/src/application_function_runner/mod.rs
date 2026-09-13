@@ -37,6 +37,11 @@ use common::{
         ExecutionContext,
         RequestContext,
     },
+    explain::{
+        Outcome,
+        Phase,
+        TraceHandle,
+    },
     fastrace_helpers::EncodedSpan,
     knobs::{
         APPLICATION_FUNCTION_RUNNER_ACTION_SEMAPHORE_TIMEOUT,
@@ -814,6 +819,15 @@ impl<RT: Runtime> ApplicationFunctionRunner<RT> {
         )
         .await?;
         let context = ExecutionContext::new(request_context, &caller);
+        let _explain_guard = self.function_log.begin_explain(
+            &context,
+            &PublicFunctionPath::Component(path.clone()),
+            UdfType::Query,
+            &caller,
+            None,
+        );
+        let trace = _explain_guard.as_ref().map(|g| g.handle());
+        let _execution_phase = trace.as_ref().map(|t| t.phase(Phase::Execution));
         let (mut tx, outcome) = match validate_result {
             Ok(path_and_args) => {
                 self.isolate_functions
@@ -876,6 +890,13 @@ impl<RT: Runtime> ApplicationFunctionRunner<RT> {
                 QueryInvocation::Fresh,
             )
             .await;
+        if let Some(trace) = &trace {
+            trace.finish(if result.is_ok() {
+                Outcome::Success
+            } else {
+                Outcome::Error
+            });
+        }
         Ok((result, log_lines))
     }
 
@@ -939,6 +960,24 @@ impl<RT: Runtime> ApplicationFunctionRunner<RT> {
             *UDF_EXECUTOR_OCC_MAX_BACKOFF,
         );
 
+        // Session request identity is stable across Node callback HTTP retries.
+        // Hash only when capturing; the runtime ExecutionId and RNG stay untouched.
+        let mut logical_call_id = mutation_identifier
+            .as_ref()
+            .filter(|_| self.function_log.explain_recorder().is_capturing())
+            .map(|id| {
+                common::value::sha256::Sha256::hash(
+                    format!(
+                        "session-mutation:{}:{}",
+                        id.session_id.to_string(),
+                        id.request_id
+                    )
+                    .as_bytes(),
+                )
+                .as_hex()[..32]
+                    .parse()
+                    .expect("SHA256 prefix is an ExecutionId")
+            });
         loop {
             let mutation_retry_count = backoff.failures() as usize;
             let usage_tracker = FunctionUsageTracker::new();
@@ -946,12 +985,28 @@ impl<RT: Runtime> ApplicationFunctionRunner<RT> {
             // Note that we use different context for every mutation attempt.
             // This so every JS function run gets a different executionId.
             let context = ExecutionContext::new(request_context.clone(), &caller);
+            let logical_call_id = *logical_call_id.get_or_insert(context.execution_id);
+            let _explain_guard = self.function_log.begin_explain(
+                &context,
+                &path,
+                UdfType::Mutation,
+                &caller,
+                Some((logical_call_id, mutation_retry_count as u64 + 1)),
+            );
+            let trace = _explain_guard.as_ref().map(|g| g.handle());
+            let _total_phase = trace.as_ref().map(|t| t.phase(Phase::Total));
 
             let start = self.runtime.monotonic_now();
             let mut tx = self
                 .database
                 .begin_with_usage(identity.clone(), usage_tracker.clone())
-                .await?;
+                .await
+                .inspect_err(|_| {
+                    if let Some(trace) = &trace {
+                        trace.finish(Outcome::Error);
+                    }
+                })?;
+            tx.set_explain_trace(trace.clone());
             let pause_client = self.runtime.pause_client();
             pause_client.wait("retry_mutation_loop_start").await;
             let identity = tx.inert_identity();
@@ -959,11 +1014,26 @@ impl<RT: Runtime> ApplicationFunctionRunner<RT> {
             // Return the previous execution's result if the mutation was committed already.
             if let Some(result) = self
                 .check_mutation_status(&mut tx, &mutation_identifier)
-                .await?
+                .await
+                .inspect_err(|_| {
+                    if let Some(trace) = &trace {
+                        trace.finish(Outcome::Error);
+                    }
+                })?
             {
+                if let Some(trace) = &trace {
+                    trace.record(common::explain::ExplainEvent::Causal {
+                        relation: "mutation_result_replayed".into(),
+                        target_execution_id: None,
+                        scheduled_job_id: None,
+                        causality: "recorded".into(),
+                    });
+                    trace.finish(Outcome::Success);
+                }
                 return Ok(result);
             }
 
+            let execution_phase = trace.as_ref().map(|t| t.phase(Phase::Execution));
             let result: Result<(Transaction<RT>, ValidatedUdfOutcome), anyhow::Error> = self
                 .run_mutation_no_udf_log(
                     tx,
@@ -974,6 +1044,7 @@ impl<RT: Runtime> ApplicationFunctionRunner<RT> {
                     mutation_queue_length,
                 )
                 .await;
+            drop(execution_phase);
             let (mut tx, mut outcome) = match result {
                 Ok(r) => r,
                 Err(e) => {
@@ -985,8 +1056,23 @@ impl<RT: Runtime> ApplicationFunctionRunner<RT> {
                             "Write throughput limit exceeded, retrying {write_source:?} after \
                              {sleep:?}",
                         );
+                        if let Some(trace) = &trace {
+                            trace.discard_staged_jobs();
+                            trace.record(common::explain::ExplainEvent::Causal {
+                                relation: "retry_write_throughput".into(),
+                                target_execution_id: None,
+                                scheduled_job_id: None,
+                                causality: "recorded".into(),
+                            });
+                            trace.finish(Outcome::Retry);
+                        }
+                        let _backoff_phase = trace.as_ref().map(|t| t.phase(Phase::RetryBackoff));
                         self.runtime.wait(sleep).await;
                         continue;
+                    }
+                    if let Some(trace) = &trace {
+                        trace.discard_staged_jobs();
+                        trace.finish(Outcome::Error);
                     }
                     self.function_log
                         .log_mutation_system_error(
@@ -1008,7 +1094,13 @@ impl<RT: Runtime> ApplicationFunctionRunner<RT> {
             // Save a CommittedMutation object so we won't rerun this mutation if
             // successful.
             self.write_mutation_status(&mut tx, &mutation_identifier, &outcome)
-                .await?;
+                .await
+                .inspect_err(|_| {
+                    if let Some(trace) = &trace {
+                        trace.discard_staged_jobs();
+                        trace.finish(Outcome::Error);
+                    }
+                })?;
 
             let stats = tx.take_stats();
             let execution_time = start.elapsed();
@@ -1018,6 +1110,9 @@ impl<RT: Runtime> ApplicationFunctionRunner<RT> {
                 // If it's an error inside the UDF, log the failed execution and return the
                 // developer error.
                 Err(ref error) => {
+                    if let Some(trace) = &trace {
+                        trace.discard_staged_jobs();
+                    }
                     drop(tx);
                     self.function_log
                         .log_mutation(
@@ -1031,6 +1126,9 @@ impl<RT: Runtime> ApplicationFunctionRunner<RT> {
                             mutation_retry_count,
                         )
                         .await;
+                    if let Some(trace) = &trace {
+                        trace.finish(Outcome::Error);
+                    }
                     return Ok(Err(MutationError {
                         error: error.to_owned(),
                         log_lines,
@@ -1041,20 +1139,29 @@ impl<RT: Runtime> ApplicationFunctionRunner<RT> {
             // Attempt to commit the transaction and log an error if commit failed,
             // even if it was an OCC error. We may decide later to suppress OCC
             // errors from the log.
-            let result = match self
+            tx.set_explain_trace(trace.clone());
+            let commit_result = self
                 .database
                 .commit_with_write_source(tx, write_source.clone())
-                .await
-            {
-                Ok(ts) => Ok(MutationReturn {
-                    // The commit timestamp is known now, so unresolved commit
-                    // timestamps in the return value resolve to it, matching
-                    // the committer's resolution of the transaction's writes.
-                    value: value.resolve_commit_ts(i64::from(ts))?,
-                    log_lines,
-                    ts,
-                }),
+                .await;
+            let result = match commit_result {
+                Ok(ts) => {
+                    if let Some(trace) = &trace {
+                        trace.commit_staged_jobs();
+                    }
+                    Ok(MutationReturn {
+                        // The commit timestamp is known now, so unresolved commit
+                        // timestamps in the return value resolve to it, matching
+                        // the committer's resolution of the transaction's writes.
+                        value: value.resolve_commit_ts(i64::from(ts))?,
+                        log_lines,
+                        ts,
+                    })
+                },
                 Err(e) => {
+                    if let Some(trace) = &trace {
+                        trace.discard_staged_jobs();
+                    }
                     if e.is_deterministic_user_error() {
                         let js_error = JsError::from_error(e);
                         outcome.result = Err(js_error.clone());
@@ -1071,12 +1178,15 @@ impl<RT: Runtime> ApplicationFunctionRunner<RT> {
                                 "Optimistic concurrency control failed ({e}), retrying \
                                  {write_source:?} after {sleep:?}",
                             );
+                            let backoff_phase =
+                                trace.as_ref().map(|t| t.phase(Phase::RetryBackoff));
                             self.runtime.wait(sleep).await;
                             if let Some(write_ts_raw) = e.occ_write_ts()
                                 && let Ok(write_ts) = Timestamp::try_from(write_ts_raw)
                             {
                                 self.database.wait_for_write_ts(write_ts).await;
                             }
+                            drop(backoff_phase);
                             self.function_log
                                 .log_mutation_occ_error(
                                     outcome,
@@ -1091,7 +1201,13 @@ impl<RT: Runtime> ApplicationFunctionRunner<RT> {
                                     true,
                                 )
                                 .await;
+                            if let Some(trace) = &trace {
+                                trace.finish(Outcome::Retry);
+                            }
                             continue;
+                        }
+                        if let Some(trace) = &trace {
+                            trace.finish(Outcome::Error);
                         }
                         outcome.result = Err(JsError::from_error_ref(&e));
 
@@ -1143,6 +1259,13 @@ impl<RT: Runtime> ApplicationFunctionRunner<RT> {
                     mutation_retry_count,
                 )
                 .await;
+            if let Some(trace) = &trace {
+                trace.finish(if result.is_ok() {
+                    Outcome::Success
+                } else {
+                    Outcome::Error
+                });
+            }
             log_occ_retries(backoff.failures() as usize);
             return Ok(result);
         }
@@ -1282,6 +1405,11 @@ impl<RT: Runtime> ApplicationFunctionRunner<RT> {
             anyhow::bail!(unauthorized_error("action"));
         }
         let context = ExecutionContext::new(request_context, &caller);
+        let _explain_guard =
+            self.function_log
+                .begin_explain(&context, &path, UdfType::Action, &caller, None);
+        let trace = _explain_guard.as_ref().map(|g| g.handle());
+        let _execution_phase = trace.as_ref().map(|t| t.phase(Phase::Execution));
         let usage_tracking = FunctionUsageTracker::new();
         let start = self.runtime.monotonic_now();
         let completion_result = self
@@ -1298,6 +1426,9 @@ impl<RT: Runtime> ApplicationFunctionRunner<RT> {
         let completion = match completion_result {
             Ok(c) => c,
             Err(e) => {
+                if let Some(trace) = &trace {
+                    trace.finish(Outcome::Error);
+                }
                 self.function_log
                     .log_action_system_error(
                         &e,
@@ -1319,6 +1450,13 @@ impl<RT: Runtime> ApplicationFunctionRunner<RT> {
             .log_action(completion, usage_tracking)
             .await;
 
+        if let Some(trace) = &trace {
+            trace.finish(if result.is_ok() {
+                Outcome::Success
+            } else {
+                Outcome::Error
+            });
+        }
         let value = match result {
             Ok(value) => value,
             // If it's an error inside the UDF, log the failed execution and return the
@@ -2002,45 +2140,19 @@ impl<RT: Runtime> ApplicationFunctionRunner<RT> {
         if path.is_system() && !(identity.is_admin() || identity.is_system()) {
             anyhow::bail!(unauthorized_error("query"));
         }
-        let start = self.runtime.monotonic_now();
-        let context = ExecutionContext::new(request_context.clone(), &caller);
-        let usage_tracker = FunctionUsageTracker::new();
-        let result = self
-            .cache_manager
+        self.cache_manager
             .get(
                 request_context,
-                path.clone(),
-                args.clone(),
-                identity.clone(),
+                path,
+                args,
+                identity,
                 ts,
                 journal,
-                caller.clone(),
-                usage_tracker.clone(),
+                caller,
+                FunctionUsageTracker::new(),
                 invocation,
             )
-            .await;
-
-        match result {
-            Ok(query_return) => Ok(query_return),
-            Err(e) => {
-                // Log system errors to the function log, similar to how mutations are logged.
-                // This ensures errors like rate-limiting (TooManyConcurrentRequests) appear
-                // in the dashboard and log streams.
-                self.function_log
-                    .log_query_system_error(
-                        &e,
-                        path.debug_into_component_path(),
-                        args,
-                        identity.into(),
-                        start,
-                        caller,
-                        context,
-                        invocation,
-                    )
-                    .await?;
-                Err(e)
-            },
-        }
+            .await
     }
 
     #[fastrace::trace]
@@ -2347,6 +2459,11 @@ impl<RT: Runtime> ActionCallbacks for ApplicationFunctionRunner<RT> {
                 },
             )
             .await?;
+        if let Some(trace) = TraceHandle::lookup(&context) {
+            self.function_log
+                .explain_recorder()
+                .remember_scheduled_job(&trace, &virtual_id.to_string());
+        }
         if let Some(warning) =
             scheduled_arg_size_warning(arg_size, &None /* system_udf_path */)
         {
@@ -2369,7 +2486,8 @@ impl<RT: Runtime> ActionCallbacks for ApplicationFunctionRunner<RT> {
         identity: Identity,
         virtual_id: DeveloperDocumentId,
     ) -> anyhow::Result<()> {
-        self.database
+        let (_, changed, _) = self
+            .database
             .execute_with_occ_retries(
                 identity,
                 FunctionUsageTracker::new(),
@@ -2385,6 +2503,11 @@ impl<RT: Runtime> ActionCallbacks for ApplicationFunctionRunner<RT> {
                 },
             )
             .await?;
+        if changed && self.function_log.explain_recorder().is_capturing() {
+            self.function_log
+                .explain_recorder()
+                .record_scheduled_canceled(&virtual_id.to_string(), None);
+        }
         Ok(())
     }
 

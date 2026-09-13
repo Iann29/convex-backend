@@ -49,6 +49,7 @@ use value::{
     TableName,
 };
 
+pub mod explain;
 mod metrics;
 
 /// The core usage stats aggregator that is cheaply cloneable

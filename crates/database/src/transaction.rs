@@ -35,6 +35,10 @@ use common::{
         ResolvedDocument,
     },
     errors::report_error,
+    explain::{
+        TraceHandle,
+        TracePhase,
+    },
     identity::InertIdentity,
     index::{
         IndexKey,
@@ -167,6 +171,7 @@ pub const DEFAULT_PAGE_SIZE: usize = 512;
 
 pub const MAX_PAGE_SIZE: usize = 1024;
 pub struct Transaction<RT: Runtime> {
+    pub(crate) explain_trace: Option<TraceHandle>,
     pub(crate) identity: Identity,
     pub(crate) id_generator: TransactionIdGenerator,
 
@@ -197,7 +202,6 @@ pub struct Transaction<RT: Runtime> {
 
     pub usage_tracker: FunctionUsageTracker,
     pub(crate) virtual_system_mapping: VirtualSystemMapping,
-
 }
 
 #[async_trait]
@@ -234,6 +238,7 @@ impl<RT: Runtime> Transaction<RT> {
     ) -> Self {
         Self {
             identity,
+            explain_trace: None,
             reads: TransactionReadSet::new(),
             writes: NestedWrites::new(Writes::new()),
             id_generator,
@@ -256,6 +261,11 @@ impl<RT: Runtime> Transaction<RT> {
     pub fn table_mapping(&mut self) -> &TableMapping {
         self.take_table_mapping_dep();
         self.metadata.table_mapping()
+    }
+
+    /// Diagnostic context only; never changes transaction reads or writes.
+    pub fn set_explain_trace(&mut self, trace: Option<TraceHandle>) {
+        self.explain_trace = trace;
     }
 
     pub fn resolve_developer_id(
@@ -1370,6 +1380,7 @@ impl<RT: Runtime> Transaction<RT> {
     pub fn clone_for_snapshot_query(&self) -> Transaction<RT> {
         Transaction {
             identity: self.identity.clone(),
+            explain_trace: self.explain_trace.clone(),
             id_generator: self.id_generator.clone_for_snapshot_query(),
             next_creation_time: self.next_creation_time,
             scheduled_size: self.scheduled_size.clone(),
@@ -1397,10 +1408,8 @@ impl<RT: Runtime> Transaction<RT> {
             runtime: self.runtime.clone(),
             usage_tracker: self.usage_tracker.clone(),
             virtual_system_mapping: self.virtual_system_mapping.clone(),
-
         }
     }
-
 }
 
 #[must_use]
@@ -1440,6 +1449,8 @@ pub struct IndexRangeRequest {
 /// writes have been staged, a FinalTransaction stores the transaction until it
 /// has been fully committed.
 pub struct FinalTransaction {
+    pub(crate) explain_trace: Option<TraceHandle>,
+    pub(crate) explain_queue: Option<TracePhase>,
     pub(crate) begin_timestamp: RepeatableTimestamp,
     pub(crate) table_mapping: TableMapping,
     pub(crate) component_registry: ComponentRegistry,
@@ -1448,7 +1459,6 @@ pub struct FinalTransaction {
     pub(crate) writes: Writes,
 
     pub(crate) usage_tracker: FunctionUsageTracker,
-
 }
 
 impl FinalTransaction {
@@ -1463,12 +1473,13 @@ impl FinalTransaction {
         let begin_timestamp = transaction.begin_timestamp();
         Ok(Self {
             begin_timestamp,
+            explain_trace: transaction.explain_trace,
+            explain_queue: None,
             table_mapping: transaction.metadata.into_flat()?.table_mapping().clone(),
             component_registry: transaction.component_registry.into_flat()?,
             reads: transaction.reads,
             writes: transaction.writes.into_flat()?,
             usage_tracker: transaction.usage_tracker,
-
         })
     }
 

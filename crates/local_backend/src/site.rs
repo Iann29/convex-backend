@@ -2,7 +2,10 @@ use std::net::SocketAddr;
 
 use axum::Router;
 use common::{
-    http::{ConvexHttpService, NoopRouteMapper},
+    http::{
+        ConvexHttpService,
+        NoopRouteMapper,
+    },
     knobs::HTTP_SERVER_TIMEOUT_DURATION,
 };
 

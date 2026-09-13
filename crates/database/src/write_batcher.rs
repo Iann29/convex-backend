@@ -1,5 +1,11 @@
 use std::{
-    sync::Arc,
+    sync::{
+        atomic::{
+            AtomicU64,
+            Ordering,
+        },
+        Arc,
+    },
     time::Duration,
 };
 
@@ -10,6 +16,14 @@ use common::{
         is_transient_db_error,
         recapture_stacktrace_noreport,
         report_error,
+    },
+    explain::{
+        monotonic_ms,
+        ExplainEvent,
+        Outcome,
+        Phase,
+        TraceHandle,
+        TracePhase,
     },
     knobs::{
         COMMITTER_BATCH_WRITE_THRESHOLD,
@@ -51,6 +65,7 @@ struct WriteRequest {
     indexes: Vec<PersistenceIndexEntry>,
     size_bytes: u64,
     ack: oneshot::Sender<anyhow::Result<()>>,
+    explain: Option<(TraceHandle, TracePhase)>,
 }
 
 #[derive(Clone, Copy)]
@@ -111,6 +126,7 @@ impl WriteBatcher {
         documents: Vec<DocumentLogEntry>,
         indexes: Vec<PersistenceIndexEntry>,
         size_bytes: u64,
+        explain_trace: Option<TraceHandle>,
     ) -> anyhow::Result<()> {
         let (ack, ack_rx) = oneshot::channel();
         self.tx
@@ -119,6 +135,10 @@ impl WriteBatcher {
                 indexes,
                 size_bytes,
                 ack,
+                explain: explain_trace.map(|t| {
+                    let wait = t.phase(Phase::PersistenceQueue);
+                    (t, wait)
+                }),
             })
             .map_err(|_| anyhow::anyhow!("committer write batcher has shut down"))?;
         ack_rx
@@ -132,6 +152,7 @@ struct Batch {
     indexes: Vec<PersistenceIndexEntry>,
     size_bytes: u64,
     acks: Vec<oneshot::Sender<anyhow::Result<()>>>,
+    explain: Vec<(TraceHandle, TracePhase)>,
 }
 
 impl Batch {
@@ -141,6 +162,7 @@ impl Batch {
             indexes: Vec::new(),
             size_bytes: 0,
             acks: Vec::new(),
+            explain: Vec::new(),
         };
         batch.push(request);
         batch
@@ -151,6 +173,9 @@ impl Batch {
         self.indexes.extend(request.indexes);
         self.size_bytes += request.size_bytes;
         self.acks.push(request.ack);
+        if let Some(trace) = request.explain {
+            self.explain.push(trace);
+        }
     }
 
     fn is_full(&self, config: &WriteBatcherConfig) -> bool {
@@ -208,7 +233,20 @@ async fn write_batch<RT: Runtime>(runtime: RT, persistence: Arc<dyn Persistence>
         indexes,
         size_bytes,
         acks,
+        explain,
     } = batch;
+    static NEXT_EXPLAIN_BATCH: AtomicU64 = AtomicU64::new(1);
+    let batch_id =
+        (!explain.is_empty()).then(|| NEXT_EXPLAIN_BATCH.fetch_add(1, Ordering::Relaxed));
+    // Each captured member sees the same physical batch identity. These shared
+    // intervals must not be added across members or treated as per-UDF fsyncs.
+    let traces: Vec<_> = explain
+        .into_iter()
+        .map(|(t, wait)| {
+            drop(wait);
+            t
+        })
+        .collect();
     metrics::log_write_batch(acks.len(), documents.len(), size_bytes);
     let mut backoff = Backoff::new(
         *INITIAL_PERSISTENCE_WRITES_BACKOFF,
@@ -216,10 +254,46 @@ async fn write_batch<RT: Runtime>(runtime: RT, persistence: Arc<dyn Persistence>
     );
     let result = loop {
         let timer = metrics::commit_persistence_write_timer();
-        match persistence
+        let start = (!traces.is_empty()).then(monotonic_ms);
+        for t in &traces {
+            t.record(ExplainEvent::PersistenceBatch {
+                batch_id: batch_id.expect("captured batch has an id"),
+                attempt: backoff.failures() as u32,
+                commit_count: acks.len(),
+                document_rows: documents.len(),
+                index_rows: indexes.len(),
+                shared: acks.len() > 1,
+                start_offset_ms: start.expect("captured batch has a start"),
+                duration_ms: None,
+                outcome: None,
+                will_retry: false,
+            });
+        }
+        let result = persistence
             .write(&documents, &indexes, ConflictStrategy::Error)
-            .await
-        {
+            .await;
+        if let Some(start) = start {
+            let duration = monotonic_ms() - start;
+            for t in &traces {
+                t.record(ExplainEvent::PersistenceBatch {
+                    batch_id: batch_id.expect("captured batch has an id"),
+                    attempt: backoff.failures() as u32,
+                    commit_count: acks.len(),
+                    document_rows: documents.len(),
+                    index_rows: indexes.len(),
+                    shared: acks.len() > 1,
+                    start_offset_ms: start,
+                    duration_ms: Some(duration),
+                    outcome: Some(if result.is_ok() {
+                        Outcome::Success
+                    } else {
+                        Outcome::Error
+                    }),
+                    will_retry: result.as_ref().is_err_and(|e| is_transient_db_error(e)),
+                });
+            }
+        }
+        match result {
             Ok(()) => {
                 timer.finish();
                 break Ok(());
@@ -231,6 +305,10 @@ async fn write_batch<RT: Runtime>(runtime: RT, persistence: Arc<dyn Persistence>
                 let delay = backoff.fail(&mut runtime.rng());
                 tracing::error!("Failed to write to persistence because database timed out");
                 report_error(&mut e).await;
+                let _backoffs: Vec<_> = traces
+                    .iter()
+                    .map(|t| t.phase(Phase::PersistenceBackoff))
+                    .collect();
                 runtime.wait(delay).await;
             },
         }
@@ -248,3 +326,6 @@ async fn write_batch<RT: Runtime>(runtime: RT, persistence: Arc<dyn Persistence>
         },
     }
 }
+
+#[cfg(test)]
+mod explain_tests;

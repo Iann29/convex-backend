@@ -22,7 +22,10 @@ use model::{
 };
 use value::heap_size::HeapSize;
 
-use crate::environment::ModuleCodeCacheResult;
+use crate::{
+    environment::ModuleCodeCacheResult,
+    explain::source_cache::SourceCache,
+};
 
 /// A `ModuleLoader` that also has the ability to store V8 code caches.
 #[async_trait]
@@ -144,6 +147,7 @@ impl V8ExternalString {
 }
 
 pub struct V8ModuleSource {
+    pub(crate) explain_sources: SourceCache,
     source: V8ExternalString,
     source_map: Option<SourceMap>,
 }
@@ -151,6 +155,7 @@ pub struct V8ModuleSource {
 impl V8ModuleSource {
     pub fn new(source: FullModuleSource) -> Self {
         Self {
+            explain_sources: SourceCache::default(),
             source: V8ExternalString::new(&source.source),
             source_map: source.source_map,
         }
@@ -176,6 +181,8 @@ impl HeapSize for V8ExternalString {
 
 impl SizedValue for V8ModuleSource {
     fn size(&self) -> u64 {
-        (self.source.heap_size() + self.source_map.heap_size()) as u64
+        // Entry payloads have their own process-wide bound. Charge the fixed
+        // per-module field here, since AsyncLru memoizes this size on insertion.
+        (self.source.heap_size() + self.source_map.heap_size() + size_of::<SourceCache>()) as u64
     }
 }

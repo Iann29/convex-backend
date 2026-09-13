@@ -35,6 +35,10 @@ use common::{
         recapture_stacktrace,
         report_error,
     },
+    explain::{
+        Phase,
+        TraceHandle,
+    },
     fastrace_helpers::get_sampled_span,
     knobs::{
         COMMITTER_MAX_CONCURRENT_COMMITS,
@@ -233,7 +237,13 @@ fn pre_validate_batch(
     let max_ts = snapshot.max_ts();
     batch
         .into_iter()
-        .map(|request| {
+        .map(|mut request| {
+            drop(request.transaction.explain_queue.take());
+            let _validation = request
+                .transaction
+                .explain_trace
+                .as_ref()
+                .map(|t| t.phase(Phase::CommitValidation));
             let begin_ts = *request.transaction.begin_timestamp;
             // A transaction that began at or after the snapshot has nothing to
             // clear here; leave the whole range to the committer.
@@ -1039,6 +1049,7 @@ impl<RT: Runtime> Committer<RT> {
         component_registry: ComponentRegistry,
         virtual_system_mapping: VirtualSystemMapping,
         write_source: WriteSource,
+        explain_trace: Option<TraceHandle>,
     ) -> anyhow::Result<(u64, IndexKeyWrites)> {
         Self::track_commit(
             usage_tracking,
@@ -1080,9 +1091,21 @@ impl<RT: Runtime> Committer<RT> {
             .collect_vec();
         metrics::commit_index_rows(index_writes.len() as u64);
         write_batcher
-            .write(document_writes, index_writes, write_bytes)
+            .write(
+                document_writes,
+                index_writes,
+                write_bytes,
+                explain_trace.clone(),
+            )
             .await
             .with_context(|| format!("Commit ({write_source:?}) failed to write to persistence"))?;
+        // The persistence ACK is the commit point. Publish captured job
+        // decisions before publish_commit makes their rows visible to the
+        // scheduler or another transaction. Application-side drains remain
+        // idempotent, including when completion logging happens later.
+        if let Some(trace) = explain_trace {
+            trace.commit_staged_jobs();
+        }
         Ok((write_bytes, index_key_writes))
     }
 
@@ -1191,6 +1214,10 @@ impl<RT: Runtime> Committer<RT> {
         let table_mapping = transaction.table_mapping.clone();
         let component_registry = transaction.component_registry.clone();
         let usage_tracking = transaction.usage_tracker.clone();
+        let explain_trace = transaction.explain_trace.clone();
+        let validation = explain_trace
+            .as_ref()
+            .map(|t| t.phase(Phase::CommitValidation));
         let ValidatedCommit {
             index_writes,
             document_writes,
@@ -1206,6 +1233,7 @@ impl<RT: Runtime> Committer<RT> {
                 return None;
             },
         };
+        drop(validation);
 
         // necessary because this value is moved
         let write_batcher = self.write_batcher.clone();
@@ -1236,6 +1264,7 @@ impl<RT: Runtime> Committer<RT> {
                         component_registry,
                         virtual_system_mapping,
                         write_source,
+                        explain_trace,
                     )
                     .in_span(Span::enter_with_local_parent(name)),
                 ));
@@ -1527,12 +1556,18 @@ impl CommitterClient {
         write_source: WriteSource,
     ) -> anyhow::Result<Timestamp> {
         let _timer = metrics::commit_client_timer(transaction.identity());
+        let explain_trace = transaction.explain_trace.clone();
+        let _explain_commit = explain_trace.as_ref().map(|t| t.phase(Phase::Commit));
+        let write_source = match &explain_trace {
+            Some(trace) => write_source.with_execution_id(trace.execution_id()),
+            None => write_source,
+        };
         transaction.assign_missing_persistence_index_ids().await?;
         self.check_generated_ids(&transaction).await?;
         let rt = transaction.runtime().clone();
 
         // Finish reading everything from persistence.
-        let transaction = transaction.finalize()?;
+        let mut transaction = transaction.finalize()?;
 
         // Note that we do a best effort validation for memory index sizes. We
         // use the latest snapshot instead of the transaction base snapshot. This
@@ -1541,6 +1576,7 @@ impl CommitterClient {
         transaction.validate_memory_index_sizes(&latest_snapshot, &self.search_flusher_wake)?;
 
         let queue_timer = metrics::commit_queue_timer();
+        transaction.explain_queue = explain_trace.as_ref().map(|t| t.phase(Phase::CommitQueue));
         let (tx, rx) = oneshot::channel();
         let message = CommitterMessage::Commit {
             queue_timer,

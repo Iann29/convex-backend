@@ -73,6 +73,16 @@ pub trait JsEnvironment<RT: Runtime>: 'static {
         resolver: Self::AsyncResolver,
     ) -> anyhow::Result<()>;
 
+    fn start_explained_async_syscall(
+        &mut self,
+        name: String,
+        args: JsonValue,
+        resolver: Self::AsyncResolver,
+        _explain: Option<Box<crate::explain::ExplainSyscall>>,
+    ) -> anyhow::Result<()> {
+        self.start_async_syscall(name, args, resolver)
+    }
+
     fn start_async_op(
         &mut self,
         request: AsyncOpRequest,
@@ -108,6 +118,10 @@ pub trait OpProvider {
 /// an import resolves to, and the syscalls themselves.
 #[allow(async_fn_in_trait)]
 pub trait SyscallProvider<RT: Runtime>: OpProvider + 'static {
+    fn explain_trace(&self) -> Option<common::explain::TraceHandle> {
+        None
+    }
+
     async fn lookup_source(
         &mut self,
         path: &str,

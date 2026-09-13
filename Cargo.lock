@@ -5949,6 +5949,7 @@ dependencies = [
  "fastrace",
  "file_storage",
  "fivetran_destination",
+ "flate2",
  "function_runner",
  "futures",
  "futures-async-stream",

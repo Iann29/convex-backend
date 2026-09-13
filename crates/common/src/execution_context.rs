@@ -1,4 +1,7 @@
-use std::str::FromStr;
+use std::{
+    str::FromStr,
+    time::Duration,
+};
 
 use anyhow::Context;
 use derive_more::Display;
@@ -79,6 +82,17 @@ impl From<String> for ClientUserAgent {
 pub struct RequestMetadata {
     pub ip: Option<ClientIp>,
     pub user_agent: Option<ClientUserAgent>,
+    /// Process-local diagnostics, deliberately omitted from client metadata and
+    /// RPC serialization. A WebSocket handshake's wait is not query admission.
+    pub explain_admission: Option<(Duration, Duration)>,
+    pub explain_subscription: Option<Box<ExplainSubscription>>,
+    pub explain_invocation: Option<crate::explain::ExplainInvocation>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExplainSubscription {
+    pub id: String,
+    pub invalidated_by: Option<ExecutionId>,
 }
 
 impl RequestMetadata {
@@ -89,15 +103,20 @@ impl RequestMetadata {
         Self {
             ip: None,
             user_agent: None,
+            explain_admission: None,
+            explain_subscription: None,
+            explain_invocation: None,
         }
     }
-
 }
 
 impl HeapSize for RequestMetadata {
     fn heap_size(&self) -> usize {
         self.ip.as_ref().map_or(0, |ip| ip.as_str().len())
             + self.user_agent.as_ref().map_or(0, |ua| ua.as_str().len())
+            + self.explain_subscription.as_ref().map_or(0, |s| {
+                std::mem::size_of::<ExplainSubscription>() + s.id.len()
+            })
     }
 }
 
@@ -126,7 +145,6 @@ impl RequestContext {
             request_metadata: RequestMetadata::system(),
         }
     }
-
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -324,6 +342,9 @@ impl TryFrom<pb::common::ExecutionContext> for ExecutionContext {
             request_metadata: RequestMetadata {
                 ip: value.client_ip.map(ClientIp::from),
                 user_agent: value.client_user_agent.map(ClientUserAgent::from),
+                explain_admission: None,
+                explain_subscription: None,
+                explain_invocation: None,
             },
         })
     }

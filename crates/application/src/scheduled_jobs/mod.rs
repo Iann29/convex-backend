@@ -33,6 +33,11 @@ use common::{
         RequestContext,
         RequestMetadata,
     },
+    explain::{
+        ExplainEvent,
+        Outcome,
+        Phase,
+    },
     fastrace_helpers::get_sampled_span,
     knobs::{
         MAX_SCHEDULED_JOB_ARGUMENT_SIZE_BYTES,
@@ -112,6 +117,7 @@ use tokio::sync::mpsc;
 use udf::validation::ValidatedUdfOutcome;
 use usage_tracking::FunctionUsageTracker;
 use value::{
+    sha256::Sha256,
     ConvexValue,
     ResolvedDocumentId,
 };
@@ -199,8 +205,7 @@ pub struct ScheduledJobContext<RT: Runtime> {
     function_log: FunctionExecutionLog<RT>,
 }
 
-impl<RT: Runtime> ScheduledJobContext<RT> {
-}
+impl<RT: Runtime> ScheduledJobContext<RT> {}
 
 impl<RT: Runtime> ScheduledJobExecutor<RT> {
     pub async fn run(
@@ -740,6 +745,7 @@ impl<RT: Runtime> ScheduledJobContext<RT> {
         let mut backoff = Backoff::new(*SCHEDULER_OCC_INITIAL_BACKOFF, *SCHEDULER_OCC_MAX_BACKOFF);
         let udf_args = job.udf_args()?;
         let request_id = RequestId::new();
+        let mut logical_call_id = None;
         loop {
             let mutation_retry_count = backoff.failures() as usize;
             let usage_tracker = FunctionUsageTracker::new();
@@ -755,6 +761,32 @@ impl<RT: Runtime> ScheduledJobContext<RT> {
                 RequestContext::new_for_system_request(request_id.clone()),
                 &caller,
             );
+            if logical_call_id.is_none() && self.function_log.explain_recorder().is_capturing() {
+                logical_call_id = Some(
+                    Sha256::hash(job_id.developer_id.to_string().as_bytes()).as_hex()[..32]
+                        .parse()?,
+                );
+            }
+            let _explain_guard = self.function_log.begin_explain(
+                &context,
+                &PublicFunctionPath::Component(job.path.clone()),
+                UdfType::Mutation,
+                &caller,
+                Some((
+                    logical_call_id.unwrap_or(context.execution_id),
+                    mutation_retry_count as u64 + 1,
+                )),
+            );
+            let trace = _explain_guard.as_ref().map(|g| g.handle());
+            let _total_phase = trace.as_ref().map(|t| t.phase(Phase::Total));
+            if let Some(trace) = &trace {
+                trace.record(ExplainEvent::Scheduler {
+                    scheduled_job_id: job_id.developer_id.to_string(),
+                    system_retry_count: job.attempts.system_errors,
+                    occ_retry_count: job.attempts.occ_errors,
+                });
+            }
+            tx.set_explain_trace(trace.clone());
             sentry::configure_scope(|scope| context.add_sentry_tags(scope));
             let identity = tx.inert_identity();
             let namespace = tx.table_mapping().tablet_namespace(job_id.tablet_id)?;
@@ -774,6 +806,7 @@ impl<RT: Runtime> ScheduledJobContext<RT> {
                 .replace(job_id, in_progress_job)
                 .await?;
 
+            let execution_phase = trace.as_ref().map(|t| t.phase(Phase::Execution));
             let result = if let Fault::Error(e) = pause_client.wait(SCHEDULED_JOB_EXECUTING).await {
                 tracing::info!("Injected error before running mutation");
                 Err(e)
@@ -789,8 +822,10 @@ impl<RT: Runtime> ScheduledJobContext<RT> {
                     )
                     .await
             };
+            drop(execution_phase);
             let (stats, execution_time, outcome) = match result {
                 Ok((mut tx, mut outcome)) => {
+                    tx.set_explain_trace(trace.clone());
                     let stats = tx.take_stats();
                     let execution_time = start.elapsed();
                     if outcome.result.is_ok() {
@@ -807,7 +842,15 @@ impl<RT: Runtime> ScheduledJobContext<RT> {
                                 .commit_with_write_source(tx, "scheduled_job_mutation_success")
                                 .await
                         };
+                        if commit_result.is_ok() {
+                            if let Some(trace) = &trace {
+                                trace.commit_staged_jobs();
+                            }
+                        }
                         if let Err(err) = commit_result {
+                            if let Some(trace) = &trace {
+                                trace.discard_staged_jobs();
+                            }
                             if err.is_deterministic_user_error() {
                                 outcome.result = Err(JsError::from_error(err));
                             } else if let Some(occ_info) = err.occ_info() {
@@ -830,12 +873,26 @@ impl<RT: Runtime> ScheduledJobContext<RT> {
                                     )
                                     .await;
                                 let delay = backoff.fail(&mut self.rt.rng());
+                                if let Some(trace) = &trace {
+                                    trace.finish(Outcome::Retry);
+                                }
+                                let _backoff_phase =
+                                    trace.as_ref().map(|t| t.phase(Phase::RetryBackoff));
                                 self.rt.wait(delay).await;
                                 continue;
                             } else {
                                 // Return an error instead of retrying indefinitely on system
                                 // errors. The scheduled job will be
                                 // rescheduled.
+                                if let Some(trace) = &trace {
+                                    trace.record(ExplainEvent::Causal {
+                                        relation: "scheduler_system_reschedule".into(),
+                                        target_execution_id: None,
+                                        scheduled_job_id: Some(job_id.developer_id.to_string()),
+                                        causality: "recorded".into(),
+                                    });
+                                    trace.finish(Outcome::Retry);
+                                }
                                 return Err(err);
                             }
                         }
@@ -843,6 +900,9 @@ impl<RT: Runtime> ScheduledJobContext<RT> {
                     (stats, execution_time, outcome)
                 },
                 Err(e) => {
+                    if let Some(trace) = &trace {
+                        trace.discard_staged_jobs();
+                    }
                     if e.short_msg() == "TooManyWrites" {
                         self.function_log
                             .log_mutation_write_throughput_error(
@@ -862,6 +922,10 @@ impl<RT: Runtime> ScheduledJobContext<RT> {
                             .wait(SCHEDULED_JOB_WRITE_THROUGHPUT_ERROR)
                             .await;
                         let delay = backoff.fail(&mut self.rt.rng());
+                        if let Some(trace) = &trace {
+                            trace.finish(Outcome::Retry);
+                        }
+                        let _backoff_phase = trace.as_ref().map(|t| t.phase(Phase::RetryBackoff));
                         self.rt.wait(delay).await;
                         continue;
                     } else if e.is_deterministic_user_error()
@@ -910,11 +974,22 @@ impl<RT: Runtime> ScheduledJobContext<RT> {
                         // Only retry in this loop on write throughput errors and OCC errors on
                         // commit (above), other system errors should cause
                         // the mutation to be rescheduled.
+                        if let Some(trace) = &trace {
+                            trace.record(ExplainEvent::Causal {
+                                relation: "scheduler_system_reschedule".into(),
+                                target_execution_id: None,
+                                scheduled_job_id: Some(job_id.developer_id.to_string()),
+                                causality: "recorded".into(),
+                            });
+                        }
                         return Err(e);
                     }
                 },
             };
             if outcome.result.is_err() {
+                if let Some(trace) = &trace {
+                    trace.discard_staged_jobs();
+                }
                 // UDF failed due to developer error. It is not safe to commit the
                 // transaction it executed in. We should remove the job in a new
                 // transaction.
@@ -977,6 +1052,23 @@ impl<RT: Runtime> ScheduledJobContext<RT> {
                     RequestContext::new_for_system_request(request_id),
                     &caller,
                 );
+                let _explain_guard = self.function_log.begin_explain(
+                    &context,
+                    &PublicFunctionPath::Component(job.path.clone()),
+                    UdfType::Action,
+                    &caller,
+                    None,
+                );
+                let trace = _explain_guard.as_ref().map(|g| g.handle());
+                let _total_phase = trace.as_ref().map(|t| t.phase(Phase::Total));
+                if let Some(trace) = &trace {
+                    trace.record(ExplainEvent::Scheduler {
+                        scheduled_job_id: job_id.developer_id.to_string(),
+                        system_retry_count: job.attempts.system_errors,
+                        occ_retry_count: job.attempts.occ_errors,
+                    });
+                }
+                tx.set_explain_trace(trace.clone());
                 sentry::configure_scope(|scope| context.add_sentry_tags(scope));
 
                 // Set state to in progress
@@ -994,7 +1086,8 @@ impl<RT: Runtime> ScheduledJobContext<RT> {
 
                 // Execute the action
                 let path = job.path.clone();
-                let completion = self
+                let execution_phase = trace.as_ref().map(|t| t.phase(Phase::Execution));
+                let completion_result = self
                     .runner
                     .run_action_no_udf_log(
                         PublicFunctionPath::Component(path),
@@ -1005,7 +1098,13 @@ impl<RT: Runtime> ScheduledJobContext<RT> {
                         context.clone(),
                         true,
                     )
-                    .await?;
+                    .await;
+                drop(execution_phase);
+                let completion = completion_result.inspect_err(|_| {
+                    if let Some(trace) = &trace {
+                        trace.finish(Outcome::Error);
+                    }
+                })?;
                 let state = match &completion.outcome.result {
                     Ok(_) => ScheduledJobState::Success,
                     Err(e) => ScheduledJobState::Failed(e.to_string()),
@@ -1023,6 +1122,7 @@ impl<RT: Runtime> ScheduledJobContext<RT> {
                     let delay = backoff.fail(&mut self.rt.rng());
                     tracing::error!("Failed to update action state, sleeping {delay:?}");
                     report_error(&mut err).await;
+                    let _backoff_phase = trace.as_ref().map(|t| t.phase(Phase::RetryBackoff));
                     self.rt.wait(delay).await;
                 }
                 self.function_log

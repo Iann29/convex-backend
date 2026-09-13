@@ -233,8 +233,7 @@ impl From<HttpRequest> for HttpRequestStream {
     }
 }
 
-impl HttpRequestStream {
-}
+impl HttpRequestStream {}
 
 impl HeapSize for HttpRequest {
     fn heap_size(&self) -> usize {
@@ -549,6 +548,8 @@ struct AdmissionWait<S> {
     wait_start: Option<Instant>,
     /// Set by the `Ready` that was recorded, cleared by `call`.
     ready_recorded: bool,
+    explain_wait_start: Option<Duration>,
+    explain_admission: Option<(Duration, Duration)>,
 }
 
 impl<S> AdmissionWait<S> {
@@ -559,6 +560,8 @@ impl<S> AdmissionWait<S> {
             record,
             wait_start: None,
             ready_recorded: false,
+            explain_wait_start: None,
+            explain_admission: None,
         }
     }
 }
@@ -571,9 +574,12 @@ impl<S: Clone> Clone for AdmissionWait<S> {
     }
 }
 
-impl<S, R> Service<R> for AdmissionWait<S>
+#[derive(Clone, Copy)]
+struct RequestAdmission((Duration, Duration));
+
+impl<S, B> Service<http::Request<B>> for AdmissionWait<S>
 where
-    S: Service<R>,
+    S: Service<http::Request<B>>,
 {
     type Error = S::Error;
     type Future = S::Future;
@@ -583,16 +589,24 @@ where
         if self.ready_recorded {
             return self.inner.poll_ready(cx);
         }
+        if self.wait_start.is_none() && crate::explain::captures_active() {
+            self.explain_wait_start = Some(crate::explain::monotonic_offset());
+        }
         let start = *self.wait_start.get_or_insert_with(Instant::now);
         let result = ready!(self.inner.poll_ready(cx));
         self.wait_start = None;
         self.ready_recorded = true;
-        (self.record)(self.service_name, start.elapsed());
+        let elapsed = start.elapsed();
+        (self.record)(self.service_name, elapsed);
+        self.explain_admission = self.explain_wait_start.take().map(|s| (s, elapsed));
         Poll::Ready(result)
     }
 
-    fn call(&mut self, req: R) -> Self::Future {
+    fn call(&mut self, mut req: http::Request<B>) -> Self::Future {
         self.ready_recorded = false;
+        if let Some(wait) = self.explain_admission.take() {
+            req.extensions_mut().insert(RequestAdmission(wait));
+        }
         self.inner.call(req)
     }
 }
@@ -639,7 +653,7 @@ mod admission_wait_tests {
         calls: Rc<Cell<u32>>,
     }
 
-    impl Service<u8> for Gate {
+    impl Service<http::Request<u8>> for Gate {
         type Error = Infallible;
         type Future = Ready<Result<u8, Infallible>>;
         type Response = u8;
@@ -652,9 +666,9 @@ mod admission_wait_tests {
             }
         }
 
-        fn call(&mut self, req: u8) -> Self::Future {
+        fn call(&mut self, req: http::Request<u8>) -> Self::Future {
             self.calls.set(self.calls.get() + 1);
-            ready(Ok(req))
+            ready(Ok(req.into_body()))
         }
     }
 
@@ -684,7 +698,7 @@ mod admission_wait_tests {
         assert!(svc.poll_ready(&mut cx).is_ready());
         // Repeated readiness polls before `call` add no sample.
         assert!(svc.poll_ready(&mut cx).is_ready());
-        drop(svc.call(1));
+        drop(svc.call(http::Request::new(1)));
         let recorded = samples();
         assert_eq!(recorded.len(), 1, "exactly one sample per request");
         assert_eq!(recorded[0].0, "unit");
@@ -692,14 +706,14 @@ mod admission_wait_tests {
 
         // The clone times only its own cycle, which is immediately ready.
         assert!(cloned.poll_ready(&mut cx).is_ready());
-        drop(cloned.call(2));
+        drop(cloned.call(http::Request::new(2)));
         let recorded = samples();
         assert_eq!(recorded.len(), 2);
         assert!(recorded[1].1 < Duration::from_millis(20), "{recorded:?}");
 
         // `call` opened a new cycle on the original service.
         assert!(svc.poll_ready(&mut cx).is_ready());
-        drop(svc.call(3));
+        drop(svc.call(http::Request::new(3)));
         assert_eq!(samples().len(), 3);
         assert_eq!(calls.get(), 3);
 
@@ -853,7 +867,6 @@ impl ConvexHttpService {
             .await
         }
     }
-
 }
 
 /// Serves an HTTP server using the given service.
@@ -1294,7 +1307,13 @@ where
             .and_then(|h| h.to_str().ok())
             .map(|s| s.to_owned());
         let user_agent = user_agent.map(ClientUserAgent::from);
-        Ok(ExtractRequestMetadata(RequestMetadata { ip, user_agent }))
+        Ok(ExtractRequestMetadata(RequestMetadata {
+            ip,
+            user_agent,
+            explain_admission: parts.extensions.get::<RequestAdmission>().map(|s| s.0),
+            explain_subscription: None,
+            explain_invocation: None,
+        }))
     }
 }
 

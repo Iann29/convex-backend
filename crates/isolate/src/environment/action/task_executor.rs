@@ -144,10 +144,23 @@ impl<RT: Runtime> TaskExecutor<RT> {
     async fn run_async_task(self, task_request: TaskRequest) -> TaskId {
         let task_id = task_request.task_id;
         let variant = match task_request.variant {
-            TaskRequestEnum::AsyncSyscall { name, args } => self
-                .run_async_syscall(name, args)
-                .await
-                .map(TaskResponseEnum::Syscall),
+            TaskRequestEnum::AsyncSyscall {
+                name,
+                args,
+                explain,
+            } => {
+                let start_ms = explain.as_ref().map(|span| span.start_ms());
+                let result = self.run_async_syscall(name, args).await;
+                if let Some(explain) = explain {
+                    explain.finish(
+                        start_ms.unwrap_or_default(),
+                        result.is_ok(),
+                        common::explain::SyscallTiming::AsyncTask,
+                        None,
+                    );
+                }
+                result.map(TaskResponseEnum::Syscall)
+            },
             TaskRequestEnum::AsyncOp(AsyncOpRequest::SendStream { stream, stream_id }) => {
                 let _ = self.send_stream(stream_id, stream).await;
                 return task_id;
