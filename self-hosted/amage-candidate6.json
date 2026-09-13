@@ -1,0 +1,32 @@
+{
+  "base": "849a6fc605b5a910c9834b61a77c5475cc24d189",
+  "patchPaths": [
+    "crates",
+    "Cargo.toml",
+    "Cargo.lock",
+    "self-hosted/docker-build",
+    "rust-toolchain",
+    ".cargo"
+  ],
+  "patchSha256": "6a1de1f651efa34189d9bc9511a3741b9519f141d88cae3aca17a5e7143a479b",
+  "patchPrefixes": {
+    "source": "c/",
+    "destination": "i/"
+  },
+  "version": "amage-20260911-candidate.6-explain-r10+base.849a6fc605b5.patch.6a1de1f651ef",
+  "variant": "6-explain-r10",
+  "published": true,
+  "publishedAt": "2026-09-11",
+  "platform": "linux/amd64",
+  "digestReference": "ghcr.io/amageweb/convex-backend@sha256:059efb6eb93c3b3a004ce17a5949516059990551d739c9e0e5cc37b2b33ddbb9",
+  "sourceRuntimeCommit": "af613dc7af05010a9c7f7d892185383bac9667a9",
+  "buildSourceTree": "0e51ca42303bc36ef84a11553ce406d9573275dd",
+  "c5Reference": "a985c6521f926bee731578d120eed0576a457cd4",
+  "buildArgs": {
+    "CARGO_BUILD_JOBS": "8",
+    "VERGEN_GIT_SHA": "849a6fc605b5a910c9834b61a77c5475cc24d189",
+    "VERGEN_GIT_COMMIT_TIMESTAMP": "2026-09-06T00:00:00Z",
+    "AMAGE_PATCH_SHA256": "6a1de1f651efa34189d9bc9511a3741b9519f141d88cae3aca17a5e7143a479b",
+    "CONVEX_RELEASE_VERSION": "amage-20260911-candidate.6-explain-r10+base.849a6fc605b5.patch.6a1de1f651ef"
+  }
+}

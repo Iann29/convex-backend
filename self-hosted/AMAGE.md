@@ -597,3 +597,69 @@ tabela/índice no bootstrap de busca, e a repetição do tuning `256 docs` com
 o app real. Um mecanismo de persistir knobs do processo por deployment no
 Synapse (P15 da auditoria) é pré-requisito para qualquer recomendação de
 tuning virar operação.
+
+## C6 — EXPLAIN R10 publicado
+
+Esta branch acrescenta captura autenticada de execuções, contadores, origens
+de consultas, tentativas e relações causais. O contrato nativo, os limites e
+as regras de interpretação estão em [EXPLAIN.md](EXPLAIN.md). A coleta observa
+tráfego existente e preserva as políticas de execução da C5.
+
+A imagem R10 foi publicada em 11/09/2026 e entrou no catálogo do Synapse
+v1.91.0 como `c6`, ao lado de `c5` e `official`. A CLI correspondente é a
+1.55.0. A publicação não troca a imagem de deployments existentes. O
+[manifesto C6](amage-candidate6.json) registra a imagem e o commit exato do
+runtime usado no build:
+
+```text
+ghcr.io/amageweb/convex-backend@sha256:059efb6eb93c3b3a004ce17a5949516059990551d739c9e0e5cc37b2b33ddbb9
+```
+
+O commit `af613dc7af05010a9c7f7d892185383bac9667a9` preserva byte a byte a
+árvore exportada para o build, `0e51ca42303bc36ef84a11553ce406d9573275dd`.
+A formatação posterior fica fora dessa identidade. Para reproduzir o hash
+do patch registrado na imagem, use os mesmos prefixos do patch original:
+
+```bash
+git diff --binary --no-ext-diff --no-color --src-prefix=c/ --dst-prefix=i/ \
+  --abbrev=9 849a6fc605b5a910c9834b61a77c5475cc24d189 \
+  af613dc7af05010a9c7f7d892185383bac9667a9 \
+  -- crates Cargo.toml Cargo.lock self-hosted/docker-build rust-toolchain .cargo \
+  | sha256sum
+```
+
+Resultado: `6a1de1f651efa34189d9bc9511a3741b9519f141d88cae3aca17a5e7143a479b`.
+
+**Desempenho ainda inconclusivo:** a confirmatória R9, com o runtime R7,
+registrou 576.000 requisições e 115.200 ACKs de mutations persistidos, sem
+falhas de request, lacunas ou duplicatas no ensaio. O p95 estimado foi
+−5,081% para C6 OFF contra C5 e +7,304% para C6 ON contra OFF; os critérios
+de precisão/estabilidade e o teto de 10% com captura não foram satisfeitos.
+A oferta fixa de 100 requests/s não mede capacidade máxima.
+
+R10 troca a cópia profunda dos eventos por `Arc<CapturedEvent>` durante o
+snapshot. Os 13 testes `common::explain` e o smoke SQLite de start/poll/stop
+passaram nessa revisão. Isso não substitui a repetição da matriz de overhead
+com a imagem R10; os resultados R9 não aprovam o desempenho dessa imagem.
+
+### Evidência histórica R7
+
+A revisão experimental R7 foi validada nativamente em 09/09/2026 com a imagem
+privada `nscr.io/bbpa030o8d7tg/amage-c6-lab@sha256:598be37050a977a8e5fdf3540673f3186ac78b75e84925f415a228c7bdbccbac`
+e o patch de runtime
+`79f404be328eb99e210bef8ae9720b38bbd1bb7748e36a41ea787c574fa768c5`:
+os dois fixtures completos SQLite/PostgreSQL, 38 gates funcionais, 6 fases de
+invalidação de origem e 18 representações HTTP passaram. GET/DELETE gzip
+preservaram o JSON decodificado e os cursores das sessões paradas; `q=0`,
+HEAD, CORS, autorização, limites, retries e falhas de persistência mantiveram
+seus contratos. A prova de expiração de 303 s é herdada, com o caminho
+inalterado; não foi repetida nesta revisão.
+
+O pacote privado de entrega contém `R7-FUNCTIONAL-RESULTS.md` e
+`lab/r7-functional-evidence.tar.gz` (SHA256
+`3c8ed2332455d994ed57413da6b729130571a260d160dc43c6c77325113a5eae`),
+com comandos e resultados. Esses nomes referem-se ao pacote da investigação,
+não a arquivos publicados neste repositório. A prova nativa, isoladamente,
+não declara integração Synapse ponta a ponta, release ou ganho de desempenho.
+A redução do corpo HTTP não substitui uma comparação de overhead controlada;
+a confirmatória posterior R9 permaneceu inconclusiva, conforme registrado acima.
