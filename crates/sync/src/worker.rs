@@ -35,6 +35,13 @@ use common::{
         ExportPath,
     },
     errors::report_error,
+    execution_context::ExplainSubscription,
+    explain::{
+        captures_active,
+        ExplainInvocation,
+        Outcome,
+        Phase,
+    },
     fastrace_helpers::get_sampled_span,
     heap_size::HeapSize,
     http::ResolvedHostname,
@@ -353,8 +360,11 @@ impl<RT: Runtime> SyncWorker<RT> {
         tx: SingleFlightSender,
         on_connect: Box<dyn FnOnce(SessionId) + Send>,
         partition_id: u64,
-        request_metadata: RequestMetadata,
+        mut request_metadata: RequestMetadata,
     ) -> Self {
+        // The handshake admission is not the admission time of every later
+        // WebSocket message or subscription reexecution.
+        request_metadata.explain_admission = None;
         let (mutation_sender, receiver) = mpsc::channel(OPERATION_QUEUE_BUFFER_SIZE);
         let mutation_futures = ReceiverStream::new(receiver).buffered(1); // Execute at most one operation at a time.
         SyncWorker {
@@ -991,6 +1001,7 @@ impl<RT: Runtime> SyncWorker<RT> {
         let host = self.host.clone();
         let client_version = self.config.client_version.clone();
         let partition_id = self.partition_id;
+        let session_id = self.state.session_id();
         let request_metadata = self.request_metadata.clone();
         let mut backoff = Backoff::new(
             *SYNC_WORKER_UPDATE_QUERIES_RETRY_INITIAL_BACKOFF_MS,
@@ -1026,6 +1037,7 @@ impl<RT: Runtime> SyncWorker<RT> {
                     identity_changed,
                     client_version.clone(),
                     partition_id,
+                    session_id,
                     subscriptions_client.clone(),
                     remaining_subscriptions.clone(),
                     new_ts,
@@ -1072,6 +1084,7 @@ impl<RT: Runtime> SyncWorker<RT> {
         identity_changed: bool,
         client_version: ClientVersion,
         partition_id: u64,
+        session_id: Option<SessionId>,
         subscriptions_client: Arc<dyn SubscriptionClient>,
         mut remaining_subscriptions: BTreeMap<QueryId, Arc<dyn SubscriptionTrait>>,
         new_ts: Timestamp,
@@ -1096,12 +1109,20 @@ impl<RT: Runtime> SyncWorker<RT> {
                 let subscriptions_client = subscriptions_client.clone();
                 async move {
                     LocalSpan::add_property(|| ("udf_path", query.udf_path.to_string()));
+                    let mut explain_invalidator = None;
                     let subscription_state = match current_subscription {
                         Some(subscription) => match subscription.extend_validity(new_ts).await {
                             Ok(SubscriptionValidity::Valid) => {
                                 SubscriptionState::Reusable(subscription)
                             },
-                            Ok(SubscriptionValidity::Invalid { invalid_ts }) => {
+                            Ok(SubscriptionValidity::Invalid {
+                                invalid_ts,
+                                explain_invalidator: current_writer,
+                            }) => {
+                                if captures_active() {
+                                    explain_invalidator = current_writer
+                                        .or_else(|| subscription.explain_invalidator());
+                                }
                                 metrics::log_query_invalidated(partition_id, invalid_ts, new_ts);
                                 SubscriptionState::NeedsRerun(QueryInvocation::Invalidated)
                             },
@@ -1135,9 +1156,29 @@ impl<RT: Runtime> SyncWorker<RT> {
                                 *SYNC_WORKER_QUERY_RETRY_INITIAL_BACKOFF_MS,
                                 *SYNC_WORKER_QUERY_RETRY_MAX_BACKOFF_SECS,
                             );
+                            // One diagnostic invocation per rerun, shared by its system
+                            // retries. A later invalidation creates a fresh invocation.
+                            let explain_invocation =
+                                captures_active().then(ExplainInvocation::default);
                             let udf_return_result = loop {
+                                let mut metadata = request_metadata.clone();
+                                metadata.explain_invocation = explain_invocation.clone();
+                                if captures_active()
+                                    && let Some(session) = session_id
+                                {
+                                    let id = common::value::sha256::Sha256::hash(
+                                        format!("subscription:{session:?}:{:?}", query.query_id)
+                                            .as_bytes(),
+                                    )
+                                    .as_hex();
+                                    metadata.explain_subscription =
+                                        Some(Box::new(ExplainSubscription {
+                                            id,
+                                            invalidated_by: explain_invalidator,
+                                        }));
+                                }
                                 let request_context =
-                                    RequestContext::new(RequestId::new(), request_metadata.clone());
+                                    RequestContext::new(RequestId::new(), metadata);
                                 let result = match query.component_path {
                                     None => {
                                         api.execute_public_query(
@@ -1175,6 +1216,9 @@ impl<RT: Runtime> SyncWorker<RT> {
                                 };
                                 match result {
                                     Err(e) if is_retriable_sync_worker_error(&e) => {
+                                        let trace = explain_invocation
+                                            .as_ref()
+                                            .and_then(|i| i.finish_attempt(Outcome::Retry));
                                         metrics::log_sync_worker_query_retry(partition_id);
                                         let wait = backoff.fail(&mut rt.rng());
                                         let err_msg = format!(
@@ -1185,10 +1229,23 @@ impl<RT: Runtime> SyncWorker<RT> {
                                         );
                                         tracing::error!(err_msg);
                                         report_error(&mut e.context(err_msg)).await;
+                                        let _backoff_phase =
+                                            trace.as_ref().map(|t| t.phase(Phase::RetryBackoff));
                                         rt.wait(wait).await;
                                         continue;
                                     },
-                                    _ => break result,
+                                    _ => {
+                                        if let Some(invocation) = &explain_invocation {
+                                            let outcome = match &result {
+                                                Ok(value) if value.result.is_ok() => {
+                                                    Outcome::Success
+                                                },
+                                                _ => Outcome::Error,
+                                            };
+                                            invocation.finish_attempt(outcome);
+                                        }
+                                        break result;
+                                    },
                                 }
                             };
                             match udf_return_result {

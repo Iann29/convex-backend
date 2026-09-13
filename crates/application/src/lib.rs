@@ -1024,6 +1024,12 @@ impl<RT: Runtime> Application<RT> {
         Ok(FunctionMetricsLog::new(&self.function_log))
     }
 
+    /// Internal diagnostic notifications; capture admission remains
+    /// ViewLogs-gated.
+    pub fn explain_recorder(&self) -> &common::explain::ExplainRecorder {
+        self.function_log.explain_recorder()
+    }
+
     pub fn function_log(&self, identity: &Identity) -> anyhow::Result<FunctionEntriesLog<'_, RT>> {
         identity.require_operation(DeploymentOp::ViewLogs)?;
         Ok(FunctionEntriesLog::new(&self.function_log))
@@ -3298,7 +3304,7 @@ impl<RT: Runtime> Application<RT> {
         end_next_ts: Option<Timestamp>,
     ) -> anyhow::Result<()> {
         loop {
-            let count = self
+            let (count, cancellation_batch) = self
                 .execute_with_audit_log_events_and_occ_retries(
                     identity.clone(),
                     request_metadata.clone(),
@@ -3311,11 +3317,15 @@ impl<RT: Runtime> Application<RT> {
                             *MAX_JOBS_CANCEL_BATCH,
                             start_next_ts,
                             end_next_ts,
+                            self.explain_recorder().cancellation_batch(),
                         )
                         .into()
                     },
                 )
                 .await?;
+            if let Some(batch) = cancellation_batch {
+                batch.commit();
+            }
             if count < *MAX_JOBS_CANCEL_BATCH {
                 break;
             }
@@ -3330,9 +3340,17 @@ impl<RT: Runtime> Application<RT> {
         max_jobs: usize,
         start_next_ts: Option<Timestamp>,
         end_next_ts: Option<Timestamp>,
-    ) -> anyhow::Result<(usize, Vec<DeploymentAuditLogEvent>)> {
+        mut cancellation_batch: Option<common::explain::ScheduledCancellationBatch>,
+    ) -> anyhow::Result<(
+        (usize, Option<common::explain::ScheduledCancellationBatch>),
+        Vec<DeploymentAuditLogEvent>,
+    )> {
         let count = SchedulerModel::new(tx, component_id.into())
-            .cancel_all(path, max_jobs, start_next_ts, end_next_ts)
+            .cancel_all(path, max_jobs, start_next_ts, end_next_ts, |id| {
+                if let Some(batch) = &mut cancellation_batch {
+                    batch.stage(&id.to_string());
+                }
+            })
             .await?;
         let component = tx.must_component_path(component_id)?;
         let events = if count > 0 {
@@ -3343,7 +3361,7 @@ impl<RT: Runtime> Application<RT> {
         } else {
             vec![]
         };
-        Ok((count, events))
+        Ok(((count, cancellation_batch), events))
     }
 
     /// Commit a transaction and send audit log events to the log manager if the

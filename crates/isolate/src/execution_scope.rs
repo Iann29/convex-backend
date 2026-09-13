@@ -682,11 +682,27 @@ impl<'a, 's: 'a, 'i: 'a, RT: Runtime, E: V8IsolateEnvironment<RT>>
             ))
         })?;
 
-        let state = self.state_mut()?;
-        let result = state
+        let trace = self
+            .state_mut()?
             .environment
             .syscall_provider()
-            .syscall(&op_name[..], args_v)?;
+            .explain_trace();
+        let explain = trace.and_then(|trace| self.explain_syscall(trace, &op_name, &args_v));
+        let start_ms = explain.as_ref().map(|s| s.start_ms());
+        let result = self
+            .state_mut()?
+            .environment
+            .syscall_provider()
+            .syscall(&op_name, args_v);
+        if let Some(explain) = explain {
+            explain.finish(
+                start_ms.unwrap_or_default(),
+                result.is_ok(),
+                common::explain::SyscallTiming::Synchronous,
+                result.as_ref().ok(),
+            );
+        }
+        let result = result?;
 
         let value_s = serde_json::to_string(&result)?;
         let value_v8 = v8::String::new(self, &value_s[..])
@@ -717,6 +733,12 @@ impl<'a, 's: 'a, 'i: 'a, RT: Runtime, E: V8IsolateEnvironment<RT>>
             ))
         })?;
 
+        let trace = self
+            .state_mut()?
+            .environment
+            .syscall_provider()
+            .explain_trace();
+        let explain = trace.and_then(|trace| self.explain_syscall(trace, &op_name, &args_v));
         let resolver = v8::PromiseResolver::new(self)
             .ok_or_else(|| anyhow!("Failed to create PromiseResolver"))?;
         let promise = resolver.get_promise(self);
@@ -725,7 +747,7 @@ impl<'a, 's: 'a, 'i: 'a, RT: Runtime, E: V8IsolateEnvironment<RT>>
             let state = self.state_mut()?;
             state
                 .environment
-                .start_async_syscall(op_name, args_v, resolver)?;
+                .start_explained_async_syscall(op_name, args_v, resolver, explain)?;
         }
         rv.set(promise.into());
         Ok(())

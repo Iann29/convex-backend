@@ -808,6 +808,9 @@ impl<T: Sync> FromRequestParts<T> for ExtractExecutionContext {
             RequestMetadata {
                 ip: client_ip,
                 user_agent: client_user_agent,
+                explain_admission: None,
+                explain_subscription: None,
+                explain_invocation: None,
             },
         )))
     }

@@ -18,12 +18,28 @@ use common::{
     components::{
         CanonicalizedComponentFunctionPath,
         ComponentPath,
+        PublicFunctionPath,
     },
     errors::{
         report_error_sync,
         JsError,
     },
-    execution_context::ExecutionContext,
+    execution_context::{
+        ExecutionContext,
+        ExecutionId,
+    },
+    explain::{
+        Accounting,
+        Counters,
+        Disposition,
+        ExplainEvent,
+        ExplainRecorder,
+        Outcome,
+        SyscallSummary,
+        TableAccess,
+        TableUsage,
+        TraceGuard,
+    },
     identity::InertIdentity,
     knobs::{
         self,
@@ -92,6 +108,7 @@ use udf_metrics::{
 use usage_tracking::{
     AggregatedFunctionUsageStats,
     CallType,
+    FunctionUsageStats,
     FunctionUsageTracker,
     OccInfo,
     UsageCounter,
@@ -153,6 +170,8 @@ pub struct FunctionExecution {
 
     /// Usage statistics for this instance
     pub usage_stats: AggregatedFunctionUsageStats,
+    // Diagnostic-only provenance. Existing logs/billing keep their old values.
+    pub explain_usage_available: bool,
     pub memory_used_mb: u64,
     /// Size of the serialized arguments in bytes, excluding HTTP actions.
     pub args_bytes: Option<u64>,
@@ -536,6 +555,7 @@ pub struct FunctionExecutionLog<RT: Runtime> {
     usage_tracking: UsageCounter,
     rt: RT,
     concurrency_stats_logger: Arc<Mutex<Box<dyn SpawnHandle>>>,
+    explain_recorder: ExplainRecorder,
 }
 
 impl<RT: Runtime> FunctionExecutionLog<RT> {
@@ -613,6 +633,7 @@ impl<RT: Runtime> FunctionExecutionLog<RT> {
             rt,
             usage_tracking,
             concurrency_stats_logger,
+            explain_recorder: ExplainRecorder::default(),
         }
     }
 
@@ -692,9 +713,11 @@ impl<RT: Runtime> FunctionExecutionLog<RT> {
         context: ExecutionContext,
         query_invocation: QueryInvocation,
     ) {
+        let explain_usage_available = matches!(&usage, TrackUsage::Track(_));
         let aggregated = match usage {
             TrackUsage::Track(usage_tracker) => {
                 let usage_stats = usage_tracker.gather_user_stats();
+                self.capture_table_usage(&context, &usage_stats);
                 let aggregated = usage_stats.aggregate();
                 self.usage_tracking
                     .track_call(
@@ -744,6 +767,7 @@ impl<RT: Runtime> FunctionExecutionLog<RT> {
             environment: ModuleEnvironment::Isolate,
             syscall_trace: outcome.syscall_trace.clone(),
             usage_stats: aggregated,
+            explain_usage_available,
             memory_used_mb: outcome.memory_in_mb,
             args_bytes,
             return_bytes,
@@ -902,9 +926,11 @@ impl<RT: Runtime> FunctionExecutionLog<RT> {
         mutation_retry_count: usize,
         will_retry: bool,
     ) {
+        let explain_usage_available = matches!(&usage, TrackUsage::Track(_));
         let aggregated = match usage {
             TrackUsage::Track(usage_tracker) => {
                 let usage_stats = usage_tracker.gather_user_stats();
+                self.capture_table_usage(&context, &usage_stats);
                 let aggregated = usage_stats.aggregate();
                 self.usage_tracking
                     .track_call(
@@ -948,6 +974,7 @@ impl<RT: Runtime> FunctionExecutionLog<RT> {
             environment: ModuleEnvironment::Isolate,
             syscall_trace: outcome.syscall_trace,
             usage_stats: aggregated,
+            explain_usage_available,
             memory_used_mb: outcome.memory_in_mb,
             args_bytes,
             return_bytes,
@@ -1002,9 +1029,11 @@ impl<RT: Runtime> FunctionExecutionLog<RT> {
     async fn _log_action(&self, completion: ActionCompletion, usage: TrackUsage) {
         let outcome = completion.outcome;
         let log_lines = completion.log_lines;
+        let explain_usage_available = matches!(&usage, TrackUsage::Track(_));
         let aggregated = match usage {
             TrackUsage::Track(usage_tracker) => {
                 let usage_stats = usage_tracker.gather_user_stats();
+                self.capture_table_usage(&completion.context, &usage_stats);
                 let aggregated = usage_stats.aggregate();
                 self.usage_tracking
                     .track_call(
@@ -1048,6 +1077,7 @@ impl<RT: Runtime> FunctionExecutionLog<RT> {
             environment: completion.environment,
             syscall_trace: outcome.syscall_trace,
             usage_stats: aggregated,
+            explain_usage_available,
             memory_used_mb: completion.memory_in_mb,
             args_bytes,
             return_bytes,
@@ -1170,9 +1200,11 @@ impl<RT: Runtime> FunctionExecutionLog<RT> {
                 matched: false,
             }
         };
+        let explain_usage_available = matches!(&usage, TrackUsage::Track(_));
         let aggregated = match usage {
             TrackUsage::Track(usage_tracker) => {
                 let usage_stats = usage_tracker.gather_user_stats();
+                self.capture_table_usage(&context, &usage_stats);
                 let aggregated = usage_stats.aggregate();
                 self.usage_tracking
                     .track_call(
@@ -1210,6 +1242,7 @@ impl<RT: Runtime> FunctionExecutionLog<RT> {
             caller,
             environment: ModuleEnvironment::Isolate,
             usage_stats: aggregated,
+            explain_usage_available,
             memory_used_mb: outcome.memory_in_mb(),
             args_bytes: None,
             return_bytes: None,
@@ -1252,12 +1285,194 @@ impl<RT: Runtime> FunctionExecutionLog<RT> {
         self.log_execution_progress(log_lines, event_source, unix_timestamp)
     }
 
+    pub fn explain_recorder(&self) -> &ExplainRecorder {
+        &self.explain_recorder
+    }
+
+    pub fn begin_explain(
+        &self,
+        context: &ExecutionContext,
+        path: &PublicFunctionPath,
+        udf_type: UdfType,
+        caller: &FunctionCaller,
+        attempt: Option<(ExecutionId, u64)>,
+    ) -> Option<TraceGuard> {
+        if !self.explain_recorder.is_capturing() {
+            return None;
+        }
+        let path = path.clone().debug_into_component_path();
+        let (logical_call_id, attempt_number) = attempt.unwrap_or((context.execution_id, 1));
+        self.explain_recorder.begin_attempt(
+            context,
+            &path.udf_path.clone().strip().to_string(),
+            &path.component.to_string(),
+            &udf_type.to_string(),
+            caller.parent_execution_id(),
+            logical_call_id,
+            attempt_number,
+        )
+    }
+
+    fn capture_table_usage(&self, context: &ExecutionContext, usage: &FunctionUsageStats) {
+        if !self.explain_recorder.is_capturing() {
+            return;
+        }
+        let Some(trace) = self.explain_recorder.trace(context) else {
+            return;
+        };
+        let tables: Vec<TableUsage> = [
+            &usage.database_egress,
+            &usage.database_ingress,
+            &usage.database_egress_v2,
+            &usage.database_ingress_v2,
+            &usage.database_egress_rows,
+            &usage.database_ingress_rows,
+        ]
+        .into_iter()
+        .map(|map| map.keys())
+        .kmerge()
+        .dedup()
+        .take(129)
+        .map(|key| TableUsage {
+            component: key.0.to_string(),
+            table: key.1.to_string(),
+            read_bytes: usage.database_egress.get(key).copied().unwrap_or_default(),
+            write_bytes: usage.database_ingress.get(key).copied().unwrap_or_default(),
+            io_read_bytes: usage
+                .database_egress_v2
+                .get(key)
+                .copied()
+                .unwrap_or_default(),
+            io_write_bytes: usage
+                .database_ingress_v2
+                .get(key)
+                .copied()
+                .unwrap_or_default(),
+            read_documents: usage
+                .database_egress_rows
+                .get(key)
+                .copied()
+                .unwrap_or_default(),
+            write_documents: usage
+                .database_ingress_rows
+                .get(key)
+                .copied()
+                .unwrap_or_default(),
+        })
+        .collect();
+        trace.set_transaction_tables(&tables);
+        trace.record(ExplainEvent::TableUsage {
+            tables,
+            counters_reference: "completion",
+        });
+    }
+
+    fn capture_execution(&self, execution: &FunctionExecution) {
+        if !self.explain_recorder.is_capturing() {
+            return;
+        }
+        let component = match &execution.params {
+            UdfParams::Function { identifier, .. } => {
+                identifier.component.clone().serialize().unwrap_or_default()
+            },
+            UdfParams::Http { .. } => String::new(),
+        };
+        let failed = execution.params.is_err();
+        let usage = &execution.usage_stats;
+        let disposition = match execution.udf_type {
+            UdfType::Query => Disposition::ReadOnly,
+            UdfType::Mutation if failed || execution.will_retry => Disposition::Discarded,
+            UdfType::Mutation => Disposition::Committed,
+            UdfType::Action | UdfType::HttpAction => Disposition::ExternalEffectsUnknown,
+        };
+        // These are inclusive attempt counters, not exclusive child costs or
+        // physical I/O. Cached outcomes replay the prior execution's counters.
+        let function = match &execution.params {
+            UdfParams::Http { identifier, .. } if !identifier.matched => {
+                format!("{} [unmatched]", identifier.method)
+            },
+            UdfParams::Http { .. } | UdfParams::Function { .. } => {
+                execution.params.identifier_str()
+            },
+        };
+        let (accounting, counters, accounting_unavailable_reason) = explain_completion_usage(
+            execution.explain_usage_available,
+            execution.cached_result,
+            usage,
+        );
+        self.explain_recorder.record_execution(
+            &execution.context,
+            &function,
+            &component,
+            &execution.udf_type.to_string(),
+            ExplainEvent::Completion {
+                outcome: if execution.will_retry {
+                    Outcome::Retry
+                } else if failed {
+                    Outcome::Error
+                } else {
+                    Outcome::Success
+                },
+                cache_hit: execution.cached_result,
+                environment: execution.environment.to_string(),
+                memory_allocation_mb: execution.memory_used_mb,
+                will_retry: execution.will_retry,
+                occ: execution.occ_info.is_some(),
+                attempt_number: execution.mutation_retry_count.map(|n| n as u64 + 1),
+                caller: execution.caller.to_string(),
+                query_invocation: execution.query_invocation.map(|invocation| {
+                    match invocation {
+                        QueryInvocation::Fresh => "fresh",
+                        QueryInvocation::Invalidated => "invalidated",
+                        QueryInvocation::IdentityChange => "identityChange",
+                    }
+                    .to_owned()
+                }),
+                execution_duration_ms: execution.execution_time * 1000.0,
+                user_execution_duration_ms: execution
+                    .user_execution_time
+                    .map(|d| d.as_secs_f64() * 1000.0),
+                mutation_queue_length: execution.mutation_queue_length,
+                accounting,
+                accounting_unavailable_reason,
+                disposition,
+                counters,
+                tables: execution
+                    .tables_touched
+                    .iter()
+                    .take(129)
+                    .map(|(table, stats)| TableAccess {
+                        table: table.to_string(),
+                        rows_read: stats.rows_read,
+                        rows_written: stats.rows_written,
+                        rows_created: stats.rows_created,
+                        rows_deleted: stats.rows_deleted,
+                    })
+                    .collect(),
+                syscall_accounting: "legacy_async_batches",
+                syscalls: execution
+                    .syscall_trace
+                    .async_syscalls
+                    .iter()
+                    .take(129)
+                    .map(|(operation, stats)| SyscallSummary {
+                        operation: operation.clone(),
+                        invocation_count: stats.invocations,
+                        error_count: stats.errors,
+                        duration_ms: stats.total_duration.as_secs_f64() * 1000.0,
+                    })
+                    .collect(),
+            },
+        );
+    }
+
     fn log_execution(
         &self,
         execution: FunctionExecution,
         send_console_events: bool,
         log_app_metrics: bool,
     ) {
+        self.capture_execution(&execution);
         if let Err(mut e) =
             self.inner
                 .lock()
@@ -2451,6 +2666,10 @@ pub struct FunctionEntriesLog<'a, RT: Runtime> {
 }
 
 impl<'a, RT: Runtime> FunctionEntriesLog<'a, RT> {
+    pub fn explain_recorder(&self) -> &ExplainRecorder {
+        self.log.explain_recorder()
+    }
+
     pub(crate) fn new(log: &'a FunctionExecutionLog<RT>) -> Self {
         Self { log }
     }
@@ -2475,5 +2694,73 @@ fn udf_metric_name(identifier: &UdfIdentifier) -> String {
             format!("{component}/{id}")
         },
         None => id,
+    }
+}
+
+/// Safe projection of work counters; none of these fields are physical CPU, WAL
+/// or fsync.
+pub(crate) fn explain_counters(usage: &AggregatedFunctionUsageStats) -> Counters {
+    Counters {
+        database_read_bytes: usage.database_read_bytes,
+        database_write_bytes: usage.database_write_bytes,
+        database_io_read_bytes: usage.database_io_read_bytes,
+        database_io_write_bytes: usage.database_io_write_bytes,
+        database_read_documents: usage.database_read_documents,
+        database_write_documents: usage.database_write_documents,
+        database_write_index_rows: usage.database_write_index_rows,
+        storage_read_bytes: usage.storage_read_bytes,
+        storage_write_bytes: usage.storage_write_bytes,
+        vector_index_read_bytes: usage.vector_index_read_bytes,
+        vector_index_write_bytes: usage.vector_index_write_bytes,
+        text_index_query_bytes: usage.text_index_query_bytes,
+        text_index_write_query_bytes: usage.text_index_write_query_bytes,
+        vector_index_read_query_bytes: usage.vector_index_read_query_bytes,
+        vector_index_write_query_bytes: usage.vector_index_write_query_bytes,
+        network_egress_bytes: usage.network_egress_bytes,
+    }
+}
+
+fn explain_completion_usage(
+    available: bool,
+    cached: bool,
+    usage: &AggregatedFunctionUsageStats,
+) -> (Accounting, Option<Counters>, Option<&'static str>) {
+    if !available {
+        return (
+            Accounting::Unavailable,
+            None,
+            Some("system_error_usage_not_tracked"),
+        );
+    }
+    (
+        if cached {
+            Accounting::CachedReplay
+        } else {
+            Accounting::InclusiveAttempt
+        },
+        Some(explain_counters(usage)),
+        None,
+    )
+}
+
+#[cfg(test)]
+mod explain_usage_tests {
+    use super::*;
+
+    #[test]
+    fn system_error_accounting_is_null_not_measured_zero() {
+        let usage = TrackUsage::SystemError;
+        let available = matches!(&usage, TrackUsage::Track(_));
+        let (accounting, counters, reason) =
+            explain_completion_usage(available, false, &AggregatedFunctionUsageStats::default());
+        let json =
+            serde_json::json!({ "accounting": accounting, "counters": counters, "reason": reason });
+        assert_eq!(json["accounting"], "unavailable");
+        assert!(json["counters"].is_null());
+        assert_eq!(json["reason"], "system_error_usage_not_tracked");
+        let (_, measured, reason) =
+            explain_completion_usage(true, false, &AggregatedFunctionUsageStats::default());
+        assert_eq!(measured.unwrap().database_read_documents, 0);
+        assert!(reason.is_none());
     }
 }

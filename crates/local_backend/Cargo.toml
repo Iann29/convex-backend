@@ -93,7 +93,7 @@ tempfile = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 tower = { workspace = true }
-tower-http = { workspace = true }
+tower-http = { workspace = true, features = ["compression-gzip"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 tungstenite = { workspace = true }
@@ -123,6 +123,7 @@ errors = { workspace = true, features = ["testing"] }
 events = { workspace = true, features = ["testing"] }
 exports = { workspace = true, features = ["testing"] }
 fivetran_destination = { workspace = true, features = ["testing"] }
+flate2 = { workspace = true }
 function_runner = { workspace = true, features = ["testing"] }
 indexing = { workspace = true, features = ["testing"] }
 jsonschema = { workspace = true }

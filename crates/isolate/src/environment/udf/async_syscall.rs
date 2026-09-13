@@ -134,6 +134,7 @@ use crate::{
             with_argument_error,
             ArgName,
         },
+        SyscallProvider,
     },
     metrics::{
         async_syscall_timer,
@@ -194,11 +195,16 @@ pub struct PendingSyscall {
     pub name: String,
     pub args: JsonValue,
     pub resolver: v8::Global<v8::PromiseResolver>,
+    pub explain: Option<Box<crate::explain::ExplainSyscall>>,
 }
 
 impl HeapSize for PendingSyscall {
     fn heap_size(&self) -> usize {
-        self.name.heap_size() + self.args.heap_size()
+        self.name.heap_size()
+            + self.args.heap_size()
+            + self.explain.as_ref().map_or(0, |span| {
+                std::mem::size_of::<crate::explain::ExplainSyscall>() + span.heap_size()
+            })
     }
 }
 
@@ -493,134 +499,188 @@ impl<RT: Runtime> DatabaseUdfSyscallProvider<RT> {
         }
         let new_reactor_depth = self.reactor_depth + 1;
 
-        let (initial_tx, rng_seed, unix_timestamp) = self.phase.start_nested_udf()?;
-        let (mut nested_tx, saved_tx) = match nested_udf_type {
-            NestedUdfType::SnapshotQuery => {
-                (initial_tx.clone_for_snapshot_query(), Some(initial_tx))
-            },
-            _ => (initial_tx, None),
-        };
-
-        let tokens = nested_tx.begin_subtransaction();
-
-        if let Some(limits) = transaction_limits {
-            nested_tx.set_transaction_limits(limits);
-        }
-
-        let query_journal = if self.is_system() && nested_udf_type == NestedUdfType::Query {
-            self.prev_journal.clone()
-        } else {
-            QueryJournal::new()
-        };
-        let (mut result_tx, outcome) = udf_callback
-            .execute_nested_udf(
-                self.client_id.clone(),
-                UdfRequest {
-                    udf_type: execution_type,
-                    path_and_args,
-                    transaction: nested_tx,
-                    unix_timestamp,
-                    journal: query_journal,
-                    context: self.context.clone(),
-                    environment_data: EnvironmentData {
-                        key_broker: self.key_broker.clone(),
-                        default_system_env_vars: self.phase.default_system_env_vars().clone(),
-                        file_storage: self.file_storage.clone(),
-                        module_loader: self.phase.module_loader().clone(),
-                        deployment: self.deployment.clone(),
-                    },
-                },
-                rng_seed,
-                new_reactor_depth,
+        let explain_parent = self.explain_trace();
+        let staged_checkpoint = explain_parent
+            .as_ref()
+            .map(|trace| trace.staged_jobs_checkpoint());
+        let explain_guard = explain_parent.as_ref().and_then(|trace| {
+            trace.begin_nested(
+                &path.udf_path.clone().strip().to_string(),
+                &path.component_path.to_string(),
+                execution_type.to_lowercase_string(),
             )
-            .await
-            .map_err(|mut e| {
-                e = remove_rejected_before_execution(e);
-                if let Some(em) = e.downcast_mut::<ErrorMetadata>()
-                    && em.is_deterministic_user_error()
-                {
-                    // This is a bit gross, but at this layer, "deterministic
-                    // user errors" get converted into catchable JS exceptions.
-                    // However, if there is an error at this point, we cannot
-                    // return to JS because the transaction has been lost.
-                    //
-                    // So upgrade such an error to a non-catchable system error.
-                    // However this should only be happening for nested system
-                    // timeouts and so it's likely that this error will again be
-                    // replaced with a higher error.
-                    em.code = ErrorCode::OperationalInternalServerError;
-                    tracing::warn!("Upgrading error from nested UDF: {e:#}");
-                }
-                e
-            })?;
-        match nested_udf_type {
-            NestedUdfType::Mutation if outcome.result.is_err() => {
-                result_tx.rollback_subtransaction(tokens)?
-            },
-            _ => result_tx.commit_subtransaction(tokens)?,
+        });
+        let explain_start = explain_guard
+            .as_ref()
+            .map(|guard| guard.handle().elapsed_ms());
+        let mut nested_reads = None;
+        let mut nested_returned = false;
+        let result: anyhow::Result<PendingValue> = async {
+            let (initial_tx, rng_seed, unix_timestamp) = self.phase.start_nested_udf()?;
+            // runUdf is unbatched and takes the parent's only transaction.
+            // This interval excludes siblings and includes nested descendants.
+            nested_reads = explain_guard.as_ref().and_then(|guard| {
+                crate::explain::nested::NestedReadGuard::start(
+                    guard.handle(),
+                    &initial_tx.usage_tracker,
+                )
+            });
+            let (mut nested_tx, saved_tx) = match nested_udf_type {
+                NestedUdfType::SnapshotQuery => {
+                    (initial_tx.clone_for_snapshot_query(), Some(initial_tx))
+                },
+                _ => (initial_tx, None),
+            };
+
+            let tokens = nested_tx.begin_subtransaction();
+
+            if let Some(limits) = transaction_limits {
+                nested_tx.set_transaction_limits(limits);
+            }
+
+            let query_journal = if self.is_system() && nested_udf_type == NestedUdfType::Query {
+                self.prev_journal.clone()
+            } else {
+                QueryJournal::new()
+            };
+            let (mut result_tx, outcome) = udf_callback
+                .execute_nested_udf(
+                    self.client_id.clone(),
+                    UdfRequest {
+                        udf_type: execution_type,
+                        path_and_args,
+                        transaction: nested_tx,
+                        unix_timestamp,
+                        journal: query_journal,
+                        context: self.context.clone(),
+                        explain_trace: explain_guard.as_ref().map(|guard| guard.handle()),
+                        environment_data: EnvironmentData {
+                            key_broker: self.key_broker.clone(),
+                            default_system_env_vars: self.phase.default_system_env_vars().clone(),
+                            file_storage: self.file_storage.clone(),
+                            module_loader: self.phase.module_loader().clone(),
+                            deployment: self.deployment.clone(),
+                        },
+                    },
+                    rng_seed,
+                    new_reactor_depth,
+                )
+                .await
+                .map_err(|mut e| {
+                    e = remove_rejected_before_execution(e);
+                    if let Some(em) = e.downcast_mut::<ErrorMetadata>()
+                        && em.is_deterministic_user_error()
+                    {
+                        // This is a bit gross, but at this layer, "deterministic
+                        // user errors" get converted into catchable JS exceptions.
+                        // However, if there is an error at this point, we cannot
+                        // return to JS because the transaction has been lost.
+                        //
+                        // So upgrade such an error to a non-catchable system error.
+                        // However this should only be happening for nested system
+                        // timeouts and so it's likely that this error will again be
+                        // replaced with a higher error.
+                        em.code = ErrorCode::OperationalInternalServerError;
+                        tracing::warn!("Upgrading error from nested UDF: {e:#}");
+                    }
+                    e
+                })?;
+            nested_returned = true;
+            match nested_udf_type {
+                NestedUdfType::Mutation if outcome.result.is_err() => {
+                    result_tx.rollback_subtransaction(tokens)?;
+                    if let (Some(trace), Some(checkpoint)) = (&explain_parent, staged_checkpoint) {
+                        trace.rollback_staged_jobs(checkpoint);
+                    }
+                },
+                _ => result_tx.commit_subtransaction(tokens)?,
+            }
+            if let Some(tx) = saved_tx {
+                self.phase.put_tx(tx)?;
+            } else {
+                self.phase.put_tx(result_tx)?;
+            }
+
+            let NestedUdfOutcome {
+                result,
+                observed_identity,
+                observed_rng,
+                observed_time,
+                syscall_trace,
+                audit_log_lines,
+                log_lines,
+                journal,
+            } = outcome;
+
+            log_run_udf(
+                self.udf_type,
+                execution_type,
+                self.phase.observed_identity(),
+                observed_identity,
+            );
+
+            if observed_identity {
+                self.phase.observe_identity()?;
+            }
+
+            if observed_rng {
+                self.phase.observe_rng();
+            }
+
+            if observed_time {
+                self.phase.unix_timestamp()?;
+            }
+
+            self.syscall_trace.merge(&syscall_trace);
+
+            if self.is_system() && nested_udf_type == NestedUdfType::Query && result.is_ok() {
+                self.next_journal = journal;
+            }
+
+            // TODO(ENG-7663): restrict log lines within subfunctions instead of
+            // limiting them only when they are returned to the parent.
+            self.emit_sub_function_log_lines(path.for_logging(), log_lines);
+
+            for audit_log_line in audit_log_lines {
+                self.emit_audit_log_line(audit_log_line)?;
+            }
+
+            // TODO: How do we want to propagate stack traces between component calls?
+            let result = result?;
+            let tx = self.phase.tx()?;
+            let table_mapping = tx.table_mapping().namespace(called_component_id.into());
+            if let Some(e) = returns_validator.check_pending_output(
+                &result,
+                &table_mapping,
+                virtual_system_mapping(),
+            )? {
+                anyhow::bail!(ErrorMetadata::bad_request("InvalidReturnValue", e.message));
+            }
+            Ok(result)
         }
-        if let Some(tx) = saved_tx {
-            self.phase.put_tx(tx)?;
-        } else {
-            self.phase.put_tx(result_tx)?;
+        .await;
+        if let Some(reads) = nested_reads {
+            reads.finish(
+                nested_returned,
+                if result.is_ok() {
+                    common::explain::Outcome::Success
+                } else {
+                    common::explain::Outcome::Error
+                },
+            );
         }
-
-        let NestedUdfOutcome {
-            result,
-            observed_identity,
-            observed_rng,
-            observed_time,
-            syscall_trace,
-            audit_log_lines,
-            log_lines,
-            journal,
-        } = outcome;
-
-        log_run_udf(
-            self.udf_type,
-            execution_type,
-            self.phase.observed_identity(),
-            observed_identity,
-        );
-
-        if observed_identity {
-            self.phase.observe_identity()?;
+        if let Some(guard) = explain_guard {
+            guard.handle().record_phase(
+                common::explain::Phase::Execution,
+                explain_start.unwrap_or_default(),
+            );
+            guard.finish(if result.is_ok() {
+                common::explain::Outcome::Success
+            } else {
+                common::explain::Outcome::Error
+            });
         }
-
-        if observed_rng {
-            self.phase.observe_rng();
-        }
-
-        if observed_time {
-            self.phase.unix_timestamp()?;
-        }
-
-        self.syscall_trace.merge(&syscall_trace);
-
-        if self.is_system() && nested_udf_type == NestedUdfType::Query && result.is_ok() {
-            self.next_journal = journal;
-        }
-
-        // TODO(ENG-7663): restrict log lines within subfunctions instead of
-        // limiting them only when they are returned to the parent.
-        self.emit_sub_function_log_lines(path.for_logging(), log_lines);
-
-        for audit_log_line in audit_log_lines {
-            self.emit_audit_log_line(audit_log_line)?;
-        }
-
-        // TODO: How do we want to propagate stack traces between component calls?
-        let result = result?;
-        let tx = self.phase.tx()?;
-        let table_mapping = tx.table_mapping().namespace(called_component_id.into());
-        if let Some(e) = returns_validator.check_pending_output(
-            &result,
-            &table_mapping,
-            virtual_system_mapping(),
-        )? {
-            anyhow::bail!(ErrorMetadata::bad_request("InvalidReturnValue", e.message));
-        }
-        Ok(result)
+        result
     }
 
     async fn create_function_handle(
@@ -1081,10 +1141,22 @@ async fn schedule<RT: Runtime>(
         .await?;
 
     let context = provider.context.clone();
+    let explain_trace = provider.explain_trace();
     let tx = provider.phase.tx()?;
     let virtual_id = VirtualSchedulerModel::new(tx, scheduling_component.into())
         .schedule(path, udf_args, scheduled_ts, context)
         .await?;
+    if let Some(trace) = explain_trace {
+        // Preserve the selected nested source until the root commit confirms it.
+        trace.stage_scheduled_job(&virtual_id.to_string());
+        // The transaction can still roll back; only the root commit confirms this link.
+        trace.record(common::explain::ExplainEvent::Causal {
+            relation: "scheduled_job_staged".to_owned(),
+            target_execution_id: None,
+            scheduled_job_id: Some(virtual_id.to_string()),
+            causality: "recorded".to_owned(),
+        });
+    }
 
     Ok(serde_json::value::to_raw_value(&String::from(virtual_id))?)
 }
@@ -1133,9 +1205,12 @@ async fn cancel_job<RT: Runtime>(
     }
 
     let tx = provider.phase.tx()?;
-    VirtualSchedulerModel::new(tx, component.into())
+    let changed = VirtualSchedulerModel::new(tx, component.into())
         .cancel(virtual_id_v6)
         .await?;
+    if changed && let Some(trace) = provider.explain_trace() {
+        trace.stage_canceled_job(&virtual_id_v6.to_string());
+    }
 
     Ok(RawValue::NULL.to_owned())
 }

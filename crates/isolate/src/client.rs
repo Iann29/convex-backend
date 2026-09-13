@@ -222,6 +222,9 @@ pub struct UdfRequest<RT: Runtime> {
     pub unix_timestamp: UnixTimestamp,
     pub journal: QueryJournal,
     pub context: ExecutionContext,
+    /// Diagnostic identity for nested calls; the application's context is
+    /// unchanged.
+    pub explain_trace: Option<common::explain::TraceHandle>,
     pub environment_data: EnvironmentData<RT>,
 }
 
@@ -637,6 +640,7 @@ impl<RT: Runtime> IsolateClient<RT> {
         subfunctions_in_same_isolate: bool,
     ) -> anyhow::Result<(Transaction<RT>, FunctionOutcome)> {
         let (tx, rx) = oneshot::channel();
+        let explain_trace = common::explain::TraceHandle::lookup(&context);
         let request = RequestType::Udf {
             request: UdfRequest {
                 path_and_args,
@@ -645,6 +649,7 @@ impl<RT: Runtime> IsolateClient<RT> {
                 unix_timestamp,
                 journal,
                 context,
+                explain_trace,
                 environment_data,
             },
             response: tx,

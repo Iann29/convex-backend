@@ -22,6 +22,7 @@ pub mod convert_v8;
 pub mod environment;
 pub mod error;
 mod execution_scope;
+pub mod explain;
 pub mod helpers;
 mod http;
 mod is_instance_of_error;

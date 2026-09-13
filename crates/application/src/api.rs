@@ -13,6 +13,7 @@ use common::{
         ExportPath,
         PublicFunctionPath,
     },
+    execution_context::ExecutionId,
     http::ResolvedHostname,
     runtime::Runtime,
     types::{
@@ -607,11 +608,19 @@ pub enum SubscriptionValidity {
         /// The earliest conflicting timestamp, if known. This is not guaranteed
         /// to be known.
         invalid_ts: Option<Timestamp>,
+        /// A recorded writer whose committed write overlapped the read set.
+        /// Absent for unknown/legacy/transport invalidation; not all writers.
+        explain_invalidator: Option<ExecutionId>,
     },
 }
 
 #[async_trait]
 pub trait SubscriptionTrait: Send + Sync {
+    /// Exact writer provenance when the subscription worker recorded it.
+    /// Remote/legacy transports and unknown invalidations return None.
+    fn explain_invalidator(&self) -> Option<ExecutionId> {
+        None
+    }
     /// Returns a future that completes after the subscription becomes invalid.
     /// The future yields the invalidation timestamp, if known; this is the same
     /// thing as [`SubscriptionValidity`]'s `invalid_ts`.
@@ -634,6 +643,10 @@ struct ApplicationSubscription {
 
 #[async_trait]
 impl SubscriptionTrait for ApplicationSubscription {
+    fn explain_invalidator(&self) -> Option<ExecutionId> {
+        self.inner.explain_invalidator()
+    }
+
     fn wait_for_invalidation(&self) -> BoxFuture<'static, anyhow::Result<Option<Timestamp>>> {
         self.inner.wait_for_invalidation().map(Ok).boxed()
     }
@@ -642,7 +655,10 @@ impl SubscriptionTrait for ApplicationSubscription {
     async fn extend_validity(&self, new_ts: Timestamp) -> anyhow::Result<SubscriptionValidity> {
         if new_ts < self.initial_ts {
             // new_ts is before the initial subscription timestamp.
-            return Ok(SubscriptionValidity::Invalid { invalid_ts: None });
+            return Ok(SubscriptionValidity::Invalid {
+                invalid_ts: None,
+                explain_invalidator: None,
+            });
         }
 
         // The inner subscription is periodically updated by the subscription
@@ -653,16 +669,22 @@ impl SubscriptionTrait for ApplicationSubscription {
             // work, so we return false here. This is valid per the function contract.
             return Ok(SubscriptionValidity::Invalid {
                 invalid_ts: self.inner.invalid_ts(),
+                explain_invalidator: self.inner.explain_invalidator(),
             });
         };
 
         let current_token = Token::new(self.reads.clone(), current_ts);
-        Ok(match self.log.refresh_token(current_token, new_ts)? {
+        let (refreshed, explain_invalidator) =
+            self.log.refresh_token_explained(current_token, new_ts)?;
+        Ok(match refreshed {
             Ok(_new_token) => SubscriptionValidity::Valid,
             Err(invalid_ts) => {
                 // Subscription validity can't be extended. Note that returning false
                 // here also doesn't mean there is a conflict.
-                SubscriptionValidity::Invalid { invalid_ts }
+                SubscriptionValidity::Invalid {
+                    invalid_ts,
+                    explain_invalidator,
+                }
             },
         })
     }

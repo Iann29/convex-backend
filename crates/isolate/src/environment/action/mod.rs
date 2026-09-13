@@ -238,6 +238,7 @@ pub struct ActionEnvironment<RT: Runtime> {
     task_responses: mpsc::UnboundedReceiver<TaskResponse>,
     phase: ActionPhase<RT>,
     syscall_trace: Arc<Mutex<SyscallTrace>>,
+    explain_trace: Option<common::explain::TraceHandle>,
     http_action_route: Arc<OnceLock<HttpActionRoute>>,
 }
 
@@ -271,6 +272,7 @@ impl<RT: Runtime> ActionEnvironment<RT> {
         http_response_streamer: Option<HttpActionResponseStreamer>,
         context: ExecutionContext,
     ) -> Self {
+        let explain_trace = common::explain::TraceHandle::lookup(&context);
         let syscall_trace = Arc::new(Mutex::new(SyscallTrace::new()));
         let (task_retval_sender, task_responses) = mpsc::unbounded_channel();
         let resources = Arc::new(Mutex::new(BTreeMap::new()));
@@ -322,6 +324,7 @@ impl<RT: Runtime> ActionEnvironment<RT> {
                 convex_origin_override,
             ),
             syscall_trace,
+            explain_trace,
             http_action_route,
         }
     }
@@ -1412,6 +1415,10 @@ impl<RT: Runtime> OpProvider for ActionEnvironment<RT> {
 }
 
 impl<RT: Runtime> SyscallProvider<RT> for ActionEnvironment<RT> {
+    fn explain_trace(&self) -> Option<common::explain::TraceHandle> {
+        self.explain_trace.clone()
+    }
+
     // We lookup all modules' sources upfront when initializing the action
     // environment, so this function always returns immediately.
     async fn lookup_source(
@@ -1443,7 +1450,24 @@ impl<RT: Runtime> JsEnvironment<RT> for ActionEnvironment<RT> {
         args: JsonValue,
         resolver: Self::AsyncResolver,
     ) -> anyhow::Result<()> {
-        self.start_task(TaskRequestEnum::AsyncSyscall { name, args }, resolver)
+        self.start_explained_async_syscall(name, args, resolver, None)
+    }
+
+    fn start_explained_async_syscall(
+        &mut self,
+        name: String,
+        args: JsonValue,
+        resolver: Self::AsyncResolver,
+        explain: Option<Box<crate::explain::ExplainSyscall>>,
+    ) -> anyhow::Result<()> {
+        self.start_task(
+            TaskRequestEnum::AsyncSyscall {
+                name,
+                args,
+                explain,
+            },
+            resolver,
+        )
     }
 
     fn start_async_op(

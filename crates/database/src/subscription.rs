@@ -28,6 +28,7 @@ use common::{
         TextIndexWrite,
     },
     errors::report_error,
+    execution_context::ExecutionId,
     knobs::{
         NUM_SUBSCRIPTION_MANAGERS,
         SUBSCRIPTIONS_WORKER_QUEUE_SIZE,
@@ -142,9 +143,14 @@ pub struct SubscriptionsClient {
 
 impl SubscriptionsClient {
     pub fn subscribe(&self, token: Token, is_system: bool) -> anyhow::Result<Subscription> {
-        let token = match self.log.refresh_reads_until_max_ts(token) {
+        let (refreshed, explain_invalidator) = self.log.refresh_reads_until_max_ts_explained(token);
+        let token = match refreshed {
             Ok(t) => t,
-            Err(invalid_ts) => return Ok(Subscription::invalid(invalid_ts)),
+            Err(invalid_ts) => {
+                let subscription = Subscription::invalid(invalid_ts);
+                *subscription.validity.lock() = Validity::Invalid(invalid_ts, explain_invalidator);
+                return Ok(subscription);
+            },
         };
         let (subscription, sender) = Subscription::new(&token);
         let request = SubscriptionRequest {
@@ -186,15 +192,20 @@ impl Drop for SubscriptionSender {
         // Make sure the subscription is marked invalid, but don't clobber any
         // existing `invalid_ts` if known
         if let ref mut validity @ Validity::Valid(_) = *self.validity.lock() {
-            *validity = Validity::Invalid(None)
+            *validity = Validity::Invalid(None, None)
         }
         _ = self.valid_tx.send(SubscriptionState::Invalid);
     }
 }
 
 impl SubscriptionSender {
-    fn drop_with_delay(self, delay: Option<Duration>, invalid_ts: Option<Timestamp>) {
-        *self.validity.lock() = Validity::Invalid(invalid_ts);
+    fn drop_with_delay(
+        self,
+        delay: Option<Duration>,
+        invalid_ts: Option<Timestamp>,
+        explain_invalidator: Option<ExecutionId>,
+    ) {
+        *self.validity.lock() = Validity::Invalid(invalid_ts, explain_invalidator);
         if let Some(delay) = delay {
             // Wait to invalidate the subscription by moving it into a new task
             tokio::spawn(async move {
@@ -429,10 +440,11 @@ impl SubscriptionManager {
         // processing some log entries from `(self.processed_ts, token.ts()]`.
         let processed_ts = self.processed_ts();
         if token.ts() < processed_ts {
-            token = match self.log.refresh_token(token, processed_ts)? {
+            let (refreshed, explain_invalidator) = self.log.refresh_token_explained(token, processed_ts)?;
+            token = match refreshed {
                 Ok(t) => t,
                 Err(invalid_ts) => {
-                    *sender.validity.lock() = Validity::Invalid(invalid_ts);
+                    *sender.validity.lock() = Validity::Invalid(invalid_ts, explain_invalidator);
                     // N.B.: we only use the returned value for tests which
                     // don't encounter this case
                     return Ok(usize::MAX);
@@ -603,6 +615,10 @@ impl SubscriptionManager {
                 > = HashMap::new();
 
                 for (subscriber_id, (invalid_ts, write_source, tablet_id)) in to_notify {
+                    let explain_invalidator = write_source.as_ref().and_then(WriteSource::execution_id);
+                    // Keep historical invalidation metrics scoped to user UDFs,
+                    // while retaining captured scheduled/system provenance.
+                    let write_source = write_source.filter(WriteSource::is_udf);
                     let display_key = write_source.as_ref().and_then(|ws| ws.display_name());
                     let entry = invalidation_counts
                         .entry((display_key, tablet_id))
@@ -621,7 +637,12 @@ impl SubscriptionManager {
                     } else {
                         None
                     };
-                    self._remove(subscriber_id, delay, Some(invalid_ts));
+                    self._remove(
+                        subscriber_id,
+                        delay,
+                        Some(invalid_ts),
+                        explain_invalidator,
+                    );
                 }
                 log_subscriptions_invalidated(num_subscriptions_invalidated);
 
@@ -671,7 +692,7 @@ impl SubscriptionManager {
             let write_ts = update.ts;
             let write_source = &update.write_source;
             let mut notify_with_ts_and_write_source = |subscriber_id| {
-                let write_source_clone = write_source.is_udf().then(|| write_source.clone());
+                let write_source_clone = (write_source.is_udf() || write_source.execution_id().is_some()).then(|| write_source.clone());
                 notify(subscriber_id, write_ts, write_source_clone)
             };
             for index_update in &update.index_updates {
@@ -696,7 +717,7 @@ impl SubscriptionManager {
             let write_ts = update.ts;
             let write_source = &update.write_source;
             let mut notify_with_ts_and_write_source = |subscriber_id| {
-                let write_source_clone = write_source.is_udf().then(|| write_source.clone());
+                let write_source_clone = (write_source.is_udf() || write_source.execution_id().is_some()).then(|| write_source.clone());
                 notify(subscriber_id, write_ts, write_source_clone)
             };
             for index_update in &update.index_updates {
@@ -756,7 +777,7 @@ impl SubscriptionManager {
         if self.get_subscriber(key).is_none() {
             return;
         }
-        self._remove(key.id, None, None);
+        self._remove(key.id, None, None, None);
     }
 
     fn _remove(
@@ -764,11 +785,14 @@ impl SubscriptionManager {
         id: SubscriberId,
         delay: Option<Duration>,
         invalid_ts: Option<Timestamp>,
+        explain_invalidator: Option<ExecutionId>,
     ) {
         let entry = self.subscribers.remove(id);
         self.subscriptions.remove(id, &entry.reads);
         // dropping `entry.sender` will invalidate the subscription
-        entry.sender.drop_with_delay(delay, invalid_ts);
+        entry
+            .sender
+            .drop_with_delay(delay, invalid_ts, explain_invalidator);
     }
 }
 
@@ -780,7 +804,7 @@ enum SubscriptionState {
 
 enum Validity {
     Valid(Arc<AtomicI64>),
-    Invalid(Option<Timestamp>),
+    Invalid(Option<Timestamp>, Option<ExecutionId>),
 }
 
 impl Validity {
@@ -789,13 +813,13 @@ impl Validity {
     }
 
     fn invalid(invalid_ts: Option<Timestamp>) -> Validity {
-        Self::Invalid(invalid_ts)
+        Self::Invalid(invalid_ts, None)
     }
 
     fn adopt(&mut self, validity_ts: Arc<AtomicI64>) {
         match self {
             Self::Valid(self_ts) => *self_ts = validity_ts,
-            Self::Invalid(_) => panic!("cannot adopt an invalid subscription!"),
+            Self::Invalid(..) => panic!("cannot adopt an invalid subscription!"),
         }
     }
 
@@ -807,14 +831,14 @@ impl Validity {
                     .try_into()
                     .expect("only legal timestamp values can be written to valid_ts"),
             ),
-            Self::Invalid(_) => None,
+            Self::Invalid(..) => None,
         }
     }
 
     fn invalid_ts(&self) -> Option<Timestamp> {
         match self {
             Self::Valid(_) => None,
-            Self::Invalid(invalid_ts) => *invalid_ts,
+            Self::Invalid(invalid_ts, _) => *invalid_ts,
         }
     }
 }
@@ -855,6 +879,15 @@ impl Subscription {
 
     pub fn invalid_ts(&self) -> Option<Timestamp> {
         self.validity.lock().invalid_ts()
+    }
+
+    /// Known only when an observed writer actually overlapped this read set.
+    /// Early invalidation, log expiry and transport errors leave it absent.
+    pub fn explain_invalidator(&self) -> Option<ExecutionId> {
+        match &*self.validity.lock() {
+            Validity::Invalid(_, writer) => *writer,
+            Validity::Valid(_) => None,
+        }
     }
 
     /// Wait for subscription invalidation. In general, prefer

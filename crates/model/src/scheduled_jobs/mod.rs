@@ -323,6 +323,10 @@ impl<'a, RT: Runtime> SchedulerModel<'a, RT> {
         let id = SystemMetadataModel::new(self.tx, self.namespace)
             .insert_metadata(&SCHEDULED_JOBS_TABLE, job.try_into()?)
             .await?;
+        if let Some(trace) = common::explain::TraceHandle::lookup(&context) {
+            // This write is still transactional: publish its causal link only on commit.
+            trace.stage_scheduled_job(&id.developer_id.to_string());
+        }
 
         Ok(id)
     }
@@ -395,11 +399,12 @@ impl<'a, RT: Runtime> SchedulerModel<'a, RT> {
 
     /// Cancel a scheduled job if it is in Pending or InProgress state.
     /// Otherwise, it has already been completed in another transaction.
-    pub async fn cancel(&mut self, id: ResolvedDocumentId) -> anyhow::Result<()> {
+    pub async fn cancel(&mut self, id: ResolvedDocumentId) -> anyhow::Result<bool> {
         if let Some(scheduled_job) = self.check_status(id).await? {
             match scheduled_job {
                 ScheduledJobState::Pending | ScheduledJobState::InProgress { .. } => {
                     self.complete(id, ScheduledJobState::Canceled).await?;
+                    return Ok(true);
                 },
                 ScheduledJobState::Canceled
                 | ScheduledJobState::Success
@@ -408,7 +413,7 @@ impl<'a, RT: Runtime> SchedulerModel<'a, RT> {
         } else {
             tracing::error!("Tried to cancel a job with unknown state: {}", id)
         }
-        Ok(())
+        Ok(false)
     }
 
     pub async fn delete(&mut self, id: ResolvedDocumentId) -> anyhow::Result<()> {
@@ -439,6 +444,7 @@ impl<'a, RT: Runtime> SchedulerModel<'a, RT> {
         limit: usize,
         start_next_ts: Option<Timestamp>,
         end_next_ts: Option<Timestamp>,
+        mut on_canceled: impl FnMut(DeveloperDocumentId),
     ) -> anyhow::Result<usize> {
         let index_query = match path {
             Some(path) => {
@@ -501,7 +507,9 @@ impl<'a, RT: Runtime> SchedulerModel<'a, RT> {
         while count < limit
             && let Some(doc) = query_stream.next(self.tx, None).await?
         {
-            self.cancel(doc.id()).await?;
+            if self.cancel(doc.id()).await? {
+                on_canceled(doc.id().developer_id);
+            }
             count += 1;
         }
         Ok(count)
@@ -563,7 +571,7 @@ impl<'a, RT: Runtime> VirtualSchedulerModel<'a, RT> {
             .system_resolved_id_to_virtual_developer_id(system_id)
     }
 
-    pub async fn cancel(&mut self, virtual_id: DeveloperDocumentId) -> anyhow::Result<()> {
+    pub async fn cancel(&mut self, virtual_id: DeveloperDocumentId) -> anyhow::Result<bool> {
         let table_name = self
             .tx
             .resolve_idv6(

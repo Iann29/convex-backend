@@ -237,6 +237,7 @@ pub struct DatabaseUdfSyscallProvider<RT: Runtime> {
     syscall_trace: SyscallTrace,
 
     context: ExecutionContext,
+    explain_trace: Option<common::explain::TraceHandle>,
 
     reactor_depth: usize,
 }
@@ -313,6 +314,10 @@ impl<RT: Runtime> OpProvider for DatabaseUdfSyscallProvider<RT> {
 }
 
 impl<RT: Runtime> SyscallProvider<RT> for DatabaseUdfSyscallProvider<RT> {
+    fn explain_trace(&self) -> Option<common::explain::TraceHandle> {
+        self.explain_trace.clone()
+    }
+
     async fn lookup_source(
         &mut self,
         path: &str,
@@ -344,10 +349,21 @@ impl<RT: Runtime, S: DatabaseUdfInnerProvider<RT>> JsEnvironment<RT>
         args: JsonValue,
         resolver: Self::AsyncResolver,
     ) -> anyhow::Result<()> {
+        self.start_explained_async_syscall(name, args, resolver, None)
+    }
+
+    fn start_explained_async_syscall(
+        &mut self,
+        name: String,
+        args: JsonValue,
+        resolver: Self::AsyncResolver,
+        explain: Option<Box<crate::explain::ExplainSyscall>>,
+    ) -> anyhow::Result<()> {
         self.pending_syscalls.push_back(PendingSyscall {
             name,
             args,
             resolver,
+            explain,
         });
         Ok(())
     }
@@ -640,6 +656,7 @@ impl<RT: Runtime> DatabaseUdfEnvironment<RT> {
             unix_timestamp,
             journal,
             context,
+            explain_trace,
             environment_data,
         }: UdfRequest<RT>,
         reactor_depth: usize,
@@ -684,6 +701,7 @@ impl<RT: Runtime> DatabaseUdfEnvironment<RT> {
 
                     syscall_trace: SyscallTrace::new(),
                     context,
+                    explain_trace,
 
                     reactor_depth,
                     deployment,
@@ -1143,6 +1161,7 @@ where
                 };
                 let mut batch = AsyncSyscallBatch::new(p.name, p.args);
                 let mut resolvers = vec![p.resolver];
+                let mut explanations = p.explain.map(|explain| vec![Some(explain)]);
                 while let Some(p) = state.environment.pending_syscalls.front()
                     && batch.can_push(&p.name, &p.args)
                 {
@@ -1152,6 +1171,14 @@ where
                         .pop_front()
                         .expect("should have a syscall");
                     batch.push(p.name, p.args)?;
+                    if let Some(explanations) = &mut explanations {
+                        explanations.push(p.explain);
+                    } else if let Some(explain) = p.explain {
+                        let mut captured = Vec::with_capacity(resolvers.len() + 1);
+                        captured.resize_with(resolvers.len(), || None);
+                        captured.push(Some(explain));
+                        explanations = Some(captured);
+                    }
                     resolvers.push(p.resolver);
                 }
                 // Pause the user-code UDF timeout for the duration of the syscall.
@@ -1184,7 +1211,11 @@ where
                             } else {
                                 Either::Right(run_udf)
                             };
-                            select! {
+                            let explain_start = explanations
+                                .as_ref()
+                                .and_then(|spans| spans.iter().flatten().next())
+                                .map(|span| span.start_ms());
+                            let results = select! {
                                 biased;
                                 _ = &mut cancellation => {
                                     log_isolate_request_cancelled();
@@ -1192,8 +1223,21 @@ where
                                 },
                                 results = state.environment.syscall_provider
                                     .run_async_syscall_batch(batch, udf_callback)
-                                => Ok(results),
+                                => anyhow::Ok(results),
+                            }?;
+                            if let Some(explanations) = explanations {
+                                for (explain, result) in explanations.into_iter().zip(&results) {
+                                    if let Some(explain) = explain {
+                                        explain.finish(
+                                            explain_start.unwrap_or_default(),
+                                            result.is_ok(),
+                                            common::explain::SyscallTiming::AsyncBatch,
+                                            None,
+                                        );
+                                    }
+                                }
                             }
+                            Ok(results)
                         },
                     )
                     .await?;

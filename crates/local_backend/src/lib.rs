@@ -97,6 +97,7 @@ pub mod deployment_audit_log;
 pub mod deployment_info;
 pub mod deployment_state;
 pub mod environment_variables;
+pub mod explain;
 pub mod http_actions;
 pub mod log_sinks;
 pub mod logs;
@@ -125,6 +126,8 @@ pub struct LocalAppState {
     pub site_origin: ConvexSite,
     // Name of the instance. (e.g. crazy-giraffe-123)
     pub instance_name: String,
+    pub explain_engine: &'static str,
+    pub explain_persistence_driver_tag: &'static str,
     pub application: Application<ProdRuntime>,
     pub zombify_rx: async_broadcast::Receiver<()>,
 }
@@ -308,6 +311,8 @@ pub async fn make_app(
         origin,
         site_origin: config.convex_site_url()?,
         instance_name,
+        explain_engine: config.db.engine(),
+        explain_persistence_driver_tag: config.db.as_str(),
         application,
         zombify_rx,
     };

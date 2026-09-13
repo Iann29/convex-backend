@@ -29,6 +29,14 @@ pub struct ModuleMap {
     by_name: HashMap<ModuleSpecifier, ModuleId>,
     by_handle: HashMap<v8::Global<v8::Module>, ModuleId>,
     total_source_size: usize,
+    // Filled only by opt-in EXPLAIN. At most 512 callsites, with bounded file names.
+    pub(crate) explain_sources: HashMap<
+        (ModuleId, u32, u32),
+        (
+            Option<common::explain::SourceLocation>,
+            Option<common::explain::SourceUnavailable>,
+        ),
+    >,
 }
 
 struct ModuleInfo {
@@ -44,6 +52,7 @@ impl ModuleMap {
             by_name: HashMap::new(),
             by_handle: HashMap::new(),
             total_source_size: 0,
+            explain_sources: HashMap::new(),
         }
     }
 
@@ -68,6 +77,10 @@ impl ModuleMap {
 
     pub fn get_by_name(&self, specifier: &ModuleSpecifier) -> Option<ModuleId> {
         self.by_name.get(specifier).cloned()
+    }
+
+    pub(crate) fn module_source(&self, id: ModuleId) -> &Arc<V8ModuleSource> {
+        &self.modules[id].module_source
     }
 
     pub fn source_map(&self, id: ModuleId) -> Option<&SourceMap> {

@@ -5,12 +5,17 @@ use common::{
     components::{
         CanonicalizedComponentFunctionPath,
         ComponentPath,
+        PublicFunctionPath,
         Reference,
     },
     errors::JsError,
     execution_context::{
         ExecutionContext,
         RequestContext,
+    },
+    explain::{
+        Outcome,
+        Phase,
     },
     http::RoutedHttpPath,
     log_lines::{
@@ -27,6 +32,7 @@ use common::{
         FunctionCaller,
         ModuleEnvironment,
         RoutableMethod,
+        UdfType,
     },
 };
 use database::{
@@ -106,12 +112,21 @@ impl<RT: Runtime> ApplicationFunctionRunner<RT> {
                 FunctionName::default_export(),
             ),
         };
-        let validated_path = match ValidatedHttpPath::new(&mut tx, path).await? {
+        let validated_path = match ValidatedHttpPath::new(&mut tx, path.clone()).await? {
             Ok(validated_path) => validated_path,
             Err(e) => return Ok(udf::HttpActionResult::Error(e)),
         };
         let unix_timestamp = self.runtime.unix_timestamp();
         let context = ExecutionContext::new(request_context, &caller);
+        let _explain_guard = self.function_log.begin_explain(
+            &context,
+            &PublicFunctionPath::Component(path),
+            UdfType::HttpAction,
+            &caller,
+            None,
+        );
+        let trace = _explain_guard.as_ref().map(|g| g.handle());
+        let _execution_phase = trace.as_ref().map(|t| t.phase(Phase::Execution));
 
         let request_head = http_request.head.clone();
         let route = http_request.head.route_for_failure();
@@ -165,7 +180,20 @@ impl<RT: Runtime> ApplicationFunctionRunner<RT> {
             run_function_and_collect_log_lines(outcome_future, log_line_receiver, &send_log_line)
                 .await;
 
-        let (result_for_logging, response_sha256) = stream_result_fut.await??;
+        let stream_result = stream_result_fut.await.inspect_err(|_| {
+            if let Some(trace) = &trace {
+                trace.finish(Outcome::Error);
+            }
+        })?;
+        let (result_for_logging, response_sha256) = stream_result.inspect_err(|e| {
+            if let Some(trace) = &trace {
+                trace.finish(if e.is_client_disconnect() {
+                    Outcome::Cancelled
+                } else {
+                    Outcome::Error
+                });
+            }
+        })?;
 
         match outcome_result {
             Ok(outcome) => {
@@ -194,6 +222,13 @@ impl<RT: Runtime> ApplicationFunctionRunner<RT> {
             },
             Err(e) if e.is_deterministic_user_error() || e.is_client_disconnect() => {
                 let is_client_disconnect = e.is_client_disconnect();
+                if let Some(trace) = &trace {
+                    trace.finish(if is_client_disconnect {
+                        Outcome::Cancelled
+                    } else {
+                        Outcome::Error
+                    });
+                }
                 let js_err = JsError::from_error(e);
                 match result_for_logging {
                     Some(r) => {
@@ -271,6 +306,9 @@ impl<RT: Runtime> ApplicationFunctionRunner<RT> {
                 }
             },
             Err(e) => {
+                if let Some(trace) = &trace {
+                    trace.finish(Outcome::Error);
+                }
                 self.function_log
                     .log_http_action_system_error(
                         &e,

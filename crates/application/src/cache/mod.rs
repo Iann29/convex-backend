@@ -30,6 +30,11 @@ use common::{
         ExecutionContext,
         RequestContext,
     },
+    explain::{
+        ExplainEvent,
+        Outcome,
+        Phase,
+    },
     identity::IdentityCacheKey,
     knobs::{
         DATABASE_UDF_SYSTEM_TIMEOUT,
@@ -350,21 +355,35 @@ impl<RT: Runtime> CacheManager<RT> {
         query_invocation: QueryInvocation,
     ) -> anyhow::Result<QueryReturn> {
         let timer = get_timer();
+        let start = self.rt.monotonic_now();
+        let context = ExecutionContext::new(request_context, &caller);
+        let _explain_guard =
+            self.udf_execution
+                .begin_explain(&context, &path, UdfType::Query, &caller, None);
+        let trace = _explain_guard.as_ref().map(|g| g.handle());
+        let _total_phase = trace.as_ref().map(|t| t.phase(Phase::Total));
         let result = self
             ._get(
-                request_context,
-                path,
-                args,
-                identity,
+                context.clone(),
+                path.clone(),
+                args.clone(),
+                identity.clone(),
                 ts,
                 journal,
-                caller,
+                caller.clone(),
                 usage_tracker,
                 query_invocation,
             )
             .await;
         match &result {
             Ok((query_return, is_cache_hit)) => {
+                if let Some(trace) = &trace {
+                    trace.finish(if query_return.result.is_ok() {
+                        Outcome::Success
+                    } else {
+                        Outcome::Error
+                    });
+                }
                 succeed_get_timer(
                     timer,
                     *is_cache_hit,
@@ -373,6 +392,21 @@ impl<RT: Runtime> CacheManager<RT> {
             },
             Err(e) => {
                 timer.finish_with(e.metric_status_label_value());
+                if let Some(trace) = &trace {
+                    trace.finish(Outcome::Error);
+                }
+                self.udf_execution
+                    .log_query_system_error(
+                        e,
+                        path.debug_into_component_path(),
+                        args,
+                        identity.into(),
+                        start,
+                        caller,
+                        context,
+                        query_invocation,
+                    )
+                    .await?;
             },
         }
         Ok(result?.0)
@@ -380,7 +414,7 @@ impl<RT: Runtime> CacheManager<RT> {
 
     async fn _get(
         &self,
-        request_context: RequestContext,
+        context: ExecutionContext,
         path: PublicFunctionPath,
         args: SerializedArgs,
         identity: Identity,
@@ -400,7 +434,7 @@ impl<RT: Runtime> CacheManager<RT> {
             journal: journal.unwrap_or_else(QueryJournal::new),
             allowed_visibility: caller.allowed_visibility(),
         };
-        let context = ExecutionContext::new(request_context, &caller);
+        let trace = common::explain::TraceHandle::lookup(&context);
         // If the query exists at some cache key, but the cached entry is invalid,
         // create a Waiting entry at that key, even if it's not the most precise for the
         // request. e.g. if the query was cached with identity:None, create a
@@ -414,6 +448,9 @@ impl<RT: Runtime> CacheManager<RT> {
         let mut retry_description = vec![];
         'top: loop {
             num_attempts += 1;
+            if let Some(trace) = &trace {
+                trace.set_cache_iteration(num_attempts as u64);
+            }
             let now = self.rt.monotonic_now();
 
             // Bound the total time of the caching algorithm in cases we wait to
@@ -440,6 +477,14 @@ impl<RT: Runtime> CacheManager<RT> {
             let (op, stored_key) = match maybe_op {
                 Some(op_key) => op_key,
                 None => {
+                    if let Some(trace) = &trace {
+                        trace.record(ExplainEvent::CacheStep {
+                            iteration: num_attempts as u64,
+                            operation: "plan",
+                            outcome: "retry",
+                            discarded_cumulative: None,
+                        });
+                    }
                     retry_description.push(format!("plan_cache_op_failed ({elapsed:?})"));
                     continue 'top;
                 },
@@ -468,7 +513,18 @@ impl<RT: Runtime> CacheManager<RT> {
                 CacheOp::Go { .. } => false,
             };
             let op_type = op.to_string();
-            let (result, table_stats) = match self
+            let phase = match &op {
+                CacheOp::Ready { .. } => Phase::CacheLookup,
+                CacheOp::Wait { .. } => Phase::CacheWait,
+                CacheOp::Go { .. } => Phase::Execution,
+            };
+            let operation = match &op {
+                CacheOp::Ready { .. } => "ready",
+                CacheOp::Wait { .. } => "wait",
+                CacheOp::Go { .. } => "execute",
+            };
+            let operation_phase = trace.as_ref().map(|t| t.phase(phase));
+            let operation_result = self
                 .perform_cache_op(
                     &requested_key,
                     &stored_key,
@@ -476,10 +532,19 @@ impl<RT: Runtime> CacheManager<RT> {
                     usage_tracker.clone(),
                     &identity,
                 )
-                .await?
-            {
+                .await;
+            drop(operation_phase);
+            let (result, table_stats) = match operation_result? {
                 Some(r) => r,
                 None => {
+                    if let Some(trace) = &trace {
+                        trace.record(ExplainEvent::CacheStep {
+                            iteration: num_attempts as u64,
+                            operation,
+                            outcome: "retry",
+                            discarded_cumulative: None,
+                        });
+                    }
                     retry_description.push(format!("perform_op_{op_type}_failed ({elapsed:?})"));
                     continue 'top;
                 },
@@ -488,13 +553,36 @@ impl<RT: Runtime> CacheManager<RT> {
             // Step 3: Validate that the cache result we got is good enough. Is our desired
             // timestamp in its validity interval? If it looked at system time, is it not
             // too old?
-            let cache_result = match self.validate_cache_result(&stored_key, ts, result).await? {
+            let validation_phase = trace.as_ref().map(|t| t.phase(Phase::CacheValidation));
+            let validation_result = self.validate_cache_result(&stored_key, ts, result).await;
+            drop(validation_phase);
+            let cache_result = match validation_result? {
                 Some(r) => r,
                 None => {
+                    if let Some(trace) = &trace {
+                        let cumulative = usage_tracker.clone().gather_user_stats().aggregate();
+                        trace.record(ExplainEvent::CacheStep {
+                            iteration: num_attempts as u64,
+                            operation,
+                            outcome: "discarded",
+                            discarded_cumulative: Some(crate::function_log::explain_counters(
+                                &cumulative,
+                            )),
+                        });
+                    }
                     retry_description.push(format!("validate_cache_result_failed ({elapsed:?})"));
                     continue 'top;
                 },
             };
+
+            if let Some(trace) = &trace {
+                trace.record(ExplainEvent::CacheStep {
+                    iteration: num_attempts as u64,
+                    operation,
+                    outcome: "accepted",
+                    discarded_cumulative: None,
+                });
+            }
 
             // Step 4: Rewrite the value into the cache. If this was a cache hit, this will
             // bump the cache result's token. This method will discard the new value if the

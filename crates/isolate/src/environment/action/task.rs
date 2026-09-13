@@ -43,7 +43,11 @@ impl TaskId {
 }
 
 pub enum TaskRequestEnum {
-    AsyncSyscall { name: String, args: JsonValue },
+    AsyncSyscall {
+        name: String,
+        args: JsonValue,
+        explain: Option<Box<crate::explain::ExplainSyscall>>,
+    },
     AsyncOp(AsyncOpRequest),
 }
 

@@ -30,6 +30,7 @@ use common::{
         TextIndexWrite,
     },
     erased_slot::ErasedSlot,
+    execution_context::ExecutionId,
     knobs::{
         WRITE_LOG_MAX_RETENTION_SECS,
         WRITE_LOG_MIN_RETENTION_SECS,
@@ -202,7 +203,7 @@ fn make_writes<K, T>(
         .collect()
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub enum WriteSource {
     /// A user-defined function (mutation) that performed the write.
     Udf(Arc<UdfIdentifier>),
@@ -211,7 +212,25 @@ pub enum WriteSource {
     SystemUdf(Arc<UdfIdentifier>),
     /// An internal system operation (e.g. "system_table_cleanup").
     System(&'static str),
+    /// Capture-only provenance. Conflict detection and metric names still use
+    /// the original source; this ID is never a database key or OCC input.
+    Explained(Arc<WriteSource>, ExecutionId),
 }
+
+// Diagnostic identity must not change the existing source equality used in
+// OCC error classification ("another call to this mutation").
+impl PartialEq for WriteSource {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Explained(source, _), other) => source.as_ref() == other,
+            (source, Self::Explained(other, _)) => source == other.as_ref(),
+            (Self::Udf(a), Self::Udf(b)) | (Self::SystemUdf(a), Self::SystemUdf(b)) => a == b,
+            (Self::System(a), Self::System(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+impl Eq for WriteSource {}
 
 impl std::fmt::Debug for WriteSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -219,11 +238,23 @@ impl std::fmt::Debug for WriteSource {
             Self::Udf(id) => write!(f, "Udf({id})"),
             Self::SystemUdf(id) => write!(f, "SystemUdf({id})"),
             Self::System(s) => write!(f, "System({s:?})"),
+            Self::Explained(source, _) => source.fmt(f),
         }
     }
 }
 
 impl WriteSource {
+    pub fn with_execution_id(self, id: ExecutionId) -> Self {
+        Self::Explained(Arc::new(self), id)
+    }
+
+    pub fn execution_id(&self) -> Option<ExecutionId> {
+        match self {
+            Self::Explained(_, id) => Some(*id),
+            _ => None,
+        }
+    }
+
     /// Create a system write source from a static label.
     pub fn system(label: &'static str) -> Self {
         Self::System(label)
@@ -241,12 +272,16 @@ impl WriteSource {
                 })
             },
             Self::System(s) => Some(s.to_string()),
+            Self::Explained(source, _) => source.display_name(),
         }
     }
 
     /// Returns true if this is a user UDF write source.
     pub fn is_udf(&self) -> bool {
-        matches!(self, Self::Udf(_))
+        match self {
+            Self::Explained(source, _) => source.is_udf(),
+            _ => matches!(self, Self::Udf(_)),
+        }
     }
 
     /// Returns the UDF identifier if this is a user function write source.
@@ -255,6 +290,7 @@ impl WriteSource {
             Self::Udf(id) => Some(id),
             Self::SystemUdf(_) => None,
             Self::System(_) => None,
+            Self::Explained(source, _) => source.udf_identifier(),
         }
     }
 }
@@ -270,6 +306,7 @@ impl HeapSize for WriteSource {
         match self {
             Self::Udf(_) | Self::SystemUdf(_) => std::mem::size_of::<Arc<UdfIdentifier>>(),
             Self::System(_) => 0,
+            Self::Explained(source, _) => std::mem::size_of::<WriteSource>() + source.heap_size(),
         }
     }
 }
@@ -591,19 +628,19 @@ impl WriteLog {
 
     /// Returns Err(write_ts) if the token could not be refreshed, where
     /// write_ts is the timestamp of a conflicting write (if known)
-    fn refresh_token(&self, mut token: Token, ts: Timestamp) -> Result<Token, Option<Timestamp>> {
+    fn refresh_token_explained(&self, mut token: Token, ts: Timestamp) -> (Result<Token, Option<Timestamp>>, Option<ExecutionId>) {
         metrics::log_read_set_age(ts.secs_since_f64(token.ts()).max(0.0));
         match self.is_stale(token.reads(), token.ts(), ts) {
-            Ok(Some(conflict)) => Err(Some(conflict.write_ts)),
+            Ok(Some(conflict)) => (Err(Some(conflict.write_ts)), conflict.write_source.execution_id()),
             Err(OutOfRetentionError { .. }) => {
                 metrics::log_reads_refresh_miss();
-                Err(None)
+                (Err(None), None)
             },
             Ok(None) => {
                 if token.ts() < ts {
                     token.advance_ts(ts);
                 }
-                Ok(token)
+                (Ok(token), None)
             },
         }
     }
@@ -651,10 +688,16 @@ impl LogReader {
         token: Token,
         ts: Timestamp,
     ) -> anyhow::Result<Result<Token, Option<Timestamp>>> {
+        self.refresh_token_explained(token, ts).map(|(result, _)| result)
+    }
+
+    /// Preserve provenance from the same overlap check, without a second scan
+    /// or changing the existing refresh/retention decision.
+    pub fn refresh_token_explained(&self, token: Token, ts: Timestamp) -> anyhow::Result<(Result<Token, Option<Timestamp>>, Option<ExecutionId>)> {
         if token.ts() == ts {
             // Nothing to do. We can return Ok even if `token.ts()` has fallen
             // out of the write log retention window.
-            return Ok(Ok(token));
+            return Ok((Ok(token), None));
         }
         let snapshot = { self.inner.lock().log.clone() };
         let max_ts = snapshot.max_ts();
@@ -662,14 +705,18 @@ impl LogReader {
             ts <= max_ts,
             "Can't refresh token to newer timestamp {ts} than max ts {max_ts}"
         );
-        Ok(snapshot.refresh_token(token, ts))
+        Ok(snapshot.refresh_token_explained(token, ts))
     }
 
     pub fn refresh_reads_until_max_ts(&self, token: Token) -> Result<Token, Option<Timestamp>> {
+        self.refresh_reads_until_max_ts_explained(token).0
+    }
+
+    pub fn refresh_reads_until_max_ts_explained(&self, token: Token) -> (Result<Token, Option<Timestamp>>, Option<ExecutionId>) {
         let snapshot = { self.inner.lock().log.clone() };
         block_in_place(|| {
             let max_ts = snapshot.max_ts();
-            snapshot.refresh_token(token, max_ts)
+            snapshot.refresh_token_explained(token, max_ts)
         })
     }
 
@@ -984,3 +1031,6 @@ impl PendingWriteHandle {
         self.0
     }
 }
+
+#[cfg(test)]
+mod explain_tests;

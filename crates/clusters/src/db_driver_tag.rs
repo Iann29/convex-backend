@@ -38,6 +38,15 @@ impl DbDriverTag {
         }
     }
 
+    /// Database engine identity, independent of persistence format/version.
+    pub fn engine(&self) -> &'static str {
+        match self {
+            Self::Sqlite => "sqlite",
+            Self::Postgres(_) => "postgres",
+            Self::MySql(_) | Self::MySqlMultitenant(_) => "mysql",
+        }
+    }
+
     pub fn as_str(&self) -> &'static str {
         match self {
             DbDriverTag::Sqlite => "sqlite",
