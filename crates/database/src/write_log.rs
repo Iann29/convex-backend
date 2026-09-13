@@ -628,10 +628,17 @@ impl WriteLog {
 
     /// Returns Err(write_ts) if the token could not be refreshed, where
     /// write_ts is the timestamp of a conflicting write (if known)
-    fn refresh_token_explained(&self, mut token: Token, ts: Timestamp) -> (Result<Token, Option<Timestamp>>, Option<ExecutionId>) {
+    fn refresh_token_explained(
+        &self,
+        mut token: Token,
+        ts: Timestamp,
+    ) -> (Result<Token, Option<Timestamp>>, Option<ExecutionId>) {
         metrics::log_read_set_age(ts.secs_since_f64(token.ts()).max(0.0));
         match self.is_stale(token.reads(), token.ts(), ts) {
-            Ok(Some(conflict)) => (Err(Some(conflict.write_ts)), conflict.write_source.execution_id()),
+            Ok(Some(conflict)) => (
+                Err(Some(conflict.write_ts)),
+                conflict.write_source.execution_id(),
+            ),
             Err(OutOfRetentionError { .. }) => {
                 metrics::log_reads_refresh_miss();
                 (Err(None), None)
@@ -688,12 +695,17 @@ impl LogReader {
         token: Token,
         ts: Timestamp,
     ) -> anyhow::Result<Result<Token, Option<Timestamp>>> {
-        self.refresh_token_explained(token, ts).map(|(result, _)| result)
+        self.refresh_token_explained(token, ts)
+            .map(|(result, _)| result)
     }
 
     /// Preserve provenance from the same overlap check, without a second scan
     /// or changing the existing refresh/retention decision.
-    pub fn refresh_token_explained(&self, token: Token, ts: Timestamp) -> anyhow::Result<(Result<Token, Option<Timestamp>>, Option<ExecutionId>)> {
+    pub fn refresh_token_explained(
+        &self,
+        token: Token,
+        ts: Timestamp,
+    ) -> anyhow::Result<(Result<Token, Option<Timestamp>>, Option<ExecutionId>)> {
         if token.ts() == ts {
             // Nothing to do. We can return Ok even if `token.ts()` has fallen
             // out of the write log retention window.
@@ -712,7 +724,10 @@ impl LogReader {
         self.refresh_reads_until_max_ts_explained(token).0
     }
 
-    pub fn refresh_reads_until_max_ts_explained(&self, token: Token) -> (Result<Token, Option<Timestamp>>, Option<ExecutionId>) {
+    pub fn refresh_reads_until_max_ts_explained(
+        &self,
+        token: Token,
+    ) -> (Result<Token, Option<Timestamp>>, Option<ExecutionId>) {
         let snapshot = { self.inner.lock().log.clone() };
         block_in_place(|| {
             let max_ts = snapshot.max_ts();

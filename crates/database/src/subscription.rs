@@ -440,7 +440,8 @@ impl SubscriptionManager {
         // processing some log entries from `(self.processed_ts, token.ts()]`.
         let processed_ts = self.processed_ts();
         if token.ts() < processed_ts {
-            let (refreshed, explain_invalidator) = self.log.refresh_token_explained(token, processed_ts)?;
+            let (refreshed, explain_invalidator) =
+                self.log.refresh_token_explained(token, processed_ts)?;
             token = match refreshed {
                 Ok(t) => t,
                 Err(invalid_ts) => {
@@ -615,7 +616,8 @@ impl SubscriptionManager {
                 > = HashMap::new();
 
                 for (subscriber_id, (invalid_ts, write_source, tablet_id)) in to_notify {
-                    let explain_invalidator = write_source.as_ref().and_then(WriteSource::execution_id);
+                    let explain_invalidator =
+                        write_source.as_ref().and_then(WriteSource::execution_id);
                     // Keep historical invalidation metrics scoped to user UDFs,
                     // while retaining captured scheduled/system provenance.
                     let write_source = write_source.filter(WriteSource::is_udf);
@@ -637,12 +639,7 @@ impl SubscriptionManager {
                     } else {
                         None
                     };
-                    self._remove(
-                        subscriber_id,
-                        delay,
-                        Some(invalid_ts),
-                        explain_invalidator,
-                    );
+                    self._remove(subscriber_id, delay, Some(invalid_ts), explain_invalidator);
                 }
                 log_subscriptions_invalidated(num_subscriptions_invalidated);
 
@@ -692,7 +689,9 @@ impl SubscriptionManager {
             let write_ts = update.ts;
             let write_source = &update.write_source;
             let mut notify_with_ts_and_write_source = |subscriber_id| {
-                let write_source_clone = (write_source.is_udf() || write_source.execution_id().is_some()).then(|| write_source.clone());
+                let write_source_clone = (write_source.is_udf()
+                    || write_source.execution_id().is_some())
+                .then(|| write_source.clone());
                 notify(subscriber_id, write_ts, write_source_clone)
             };
             for index_update in &update.index_updates {
@@ -717,7 +716,9 @@ impl SubscriptionManager {
             let write_ts = update.ts;
             let write_source = &update.write_source;
             let mut notify_with_ts_and_write_source = |subscriber_id| {
-                let write_source_clone = (write_source.is_udf() || write_source.execution_id().is_some()).then(|| write_source.clone());
+                let write_source_clone = (write_source.is_udf()
+                    || write_source.execution_id().is_some())
+                .then(|| write_source.clone());
                 notify(subscriber_id, write_ts, write_source_clone)
             };
             for index_update in &update.index_updates {
