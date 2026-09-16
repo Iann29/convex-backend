@@ -1,0 +1,24 @@
+{
+  "variant": "4-capacity-r2parts",
+  "base": "849a6fc605b5a910c9834b61a77c5475cc24d189",
+  "sourceRuntimeCommit": "4268bb2a41192924ea68ade229f7303620d672a6",
+  "patchSha256": "d4d633f3457a455f58d0803075d4dc12c2c60733b3947f38a4ec31253669076f",
+  "version": "amage-20260916-candidate.4-capacity-r2parts+base.849a6fc605b5.patch.d4d633f3457a",
+  "platform": "linux/amd64",
+  "image": null,
+  "expectedIndexDigest": null,
+  "published": false,
+  "defaultSiteConcurrency": 16,
+  "buildArgs": {
+    "CARGO_BUILD_JOBS": "6",
+    "VERGEN_GIT_SHA": "849a6fc605b5a910c9834b61a77c5475cc24d189",
+    "VERGEN_GIT_COMMIT_TIMESTAMP": "2026-09-05T23:58:23Z",
+    "AMAGE_PATCH_SHA256": "d4d633f3457a455f58d0803075d4dc12c2c60733b3947f38a4ec31253669076f",
+    "CONVEX_RELEASE_VERSION": "amage-20260916-candidate.4-capacity-r2parts+base.849a6fc605b5.patch.d4d633f3457a"
+  },
+  "publishedAt": null,
+  "digestReference": null,
+  "amd64ManifestDigest": null,
+  "configDigest": null,
+  "notes": "C4 + patch de partes uniformes de multipart (STORAGE_MIN_INTERMEDIATE_PART_SIZE) para Cloudflare R2. Validado contra R2 real em 16/09/2026 (uze.ai docs/R2_MIGRATION.md)."
+}

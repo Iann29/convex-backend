@@ -539,7 +539,11 @@ try {
   const labels = image.Config.Labels;
   const manifest = JSON.parse(
     await readFile(
-      path.join(root, "self-hosted", "amage-candidate4.json"),
+      path.join(
+        root,
+        "self-hosted",
+        process.env.CANDIDATE_MANIFEST ?? "amage-candidate4.json",
+      ),
       "utf8",
     ),
   );
