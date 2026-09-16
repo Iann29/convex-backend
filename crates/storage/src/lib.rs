@@ -475,9 +475,20 @@ impl Upload for BufferedUpload {
         let Self {
             buffer: ready,
             mut upload,
+            max_intermediate_part_size,
             ..
         } = *self;
-        upload.write(ready.into()).await?;
+        // A chunk larger than the part size can leave more than one part's
+        // worth of bytes buffered (each write emits at most one part), so
+        // drain in part-sized pieces: no part ever exceeds the maximum, and
+        // every non-final part keeps the same size.
+        let mut ready = Bytes::from(ready);
+        while ready.len() > max_intermediate_part_size {
+            upload
+                .write(ready.split_to(max_intermediate_part_size))
+                .await?;
+        }
+        upload.write(ready).await?;
         upload.complete().await
     }
 }
@@ -1244,6 +1255,96 @@ mod tests {
             assert!(upload.max_intermediate_part_size <= LOCAL_DIR_MIN_PART_SIZE);
             upload.abort().await
         })
+    }
+
+    /// Upload falso que só registra o tamanho de cada parte recebida.
+    struct RecordingUpload {
+        parts: Arc<parking_lot::Mutex<Vec<usize>>>,
+    }
+
+    #[async_trait]
+    impl Upload for RecordingUpload {
+        async fn write(&mut self, data: Bytes) -> anyhow::Result<()> {
+            self.parts.lock().push(data.len());
+            Ok(())
+        }
+
+        async fn try_write_parallel<'a>(
+            &'a mut self,
+            stream: &mut Pin<Box<dyn Stream<Item = anyhow::Result<Bytes>> + Send + 'a>>,
+        ) -> anyhow::Result<()> {
+            while let Some(data) = stream.next().await {
+                self.parts.lock().push(data?.len());
+            }
+            Ok(())
+        }
+
+        async fn abort(self: Box<Self>) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn complete(self: Box<Self>) -> anyhow::Result<ObjectKey> {
+            Ok("recorded".to_string().try_into()?)
+        }
+    }
+
+    /// Escreve `total` bytes em pedaços de `chunk` bytes e devolve os tamanhos
+    /// das partes que chegaram ao upload de baixo.
+    fn buffered_part_sizes(
+        min: usize,
+        max: usize,
+        chunk: usize,
+        total: usize,
+    ) -> anyhow::Result<Vec<usize>> {
+        let parts = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let tokio = tokio::runtime::Builder::new_current_thread().build()?;
+        tokio.block_on(async {
+            let mut upload = Box::new(BufferedUpload::new(
+                RecordingUpload {
+                    parts: parts.clone(),
+                },
+                min,
+                max,
+            ));
+            let mut written = 0;
+            while written < total {
+                let n = cmp::min(chunk, total - written);
+                upload.write(Bytes::from(vec![1u8; n])).await?;
+                written += n;
+            }
+            upload.complete().await?;
+            anyhow::Ok(())
+        })?;
+        let sizes = parts.lock().clone();
+        Ok(sizes)
+    }
+
+    const MIB: usize = 1 << 20;
+
+    #[test]
+    fn s3_default_part_sizes_double_and_are_unequal() -> anyhow::Result<()> {
+        // O comportamento padrão (min 5MiB, max 200MiB): 5, 10, 20, 40... — partes
+        // intermediárias DESIGUAIS, que S3-compatíveis como o Cloudflare R2 rejeitam.
+        let sizes = buffered_part_sizes(5 * MIB, 200 * MIB, MIB, 40 * MIB)?;
+        assert_eq!(sizes, vec![5 * MIB, 10 * MIB, 20 * MIB, 5 * MIB]);
+        Ok(())
+    }
+
+    #[test]
+    fn equal_min_and_max_give_uniform_intermediate_parts() -> anyhow::Result<()> {
+        // Com min == max (STORAGE_MIN_INTERMEDIATE_PART_SIZE == STORAGE_MAX_...),
+        // toda parte intermediária tem exatamente o mesmo tamanho; só a última é menor.
+        for chunk in [MIB, 3 * MIB, 8 * MIB, 13 * MIB] {
+            let sizes = buffered_part_sizes(8 * MIB, 8 * MIB, chunk, 50 * MIB)?;
+            let (last, intermediate) = sizes.split_last().expect("at least one part");
+            assert!(
+                intermediate.iter().all(|&s| s == 8 * MIB),
+                "chunk {chunk}: {sizes:?}"
+            );
+            assert!(*last <= 8 * MIB && *last > 0, "chunk {chunk}: {sizes:?}");
+            assert_eq!(sizes.iter().sum::<usize>(), 50 * MIB);
+        }
+        Ok(())
     }
 
     #[test]

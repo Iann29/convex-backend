@@ -44,6 +44,7 @@ use common::{
     knobs::{
         AWS_S3_MIN_IDENTITY_VALIDITY,
         STORAGE_MAX_INTERMEDIATE_PART_SIZE,
+        STORAGE_MIN_INTERMEDIATE_PART_SIZE,
     },
     runtime::Runtime,
     types::{
@@ -105,6 +106,16 @@ pub const ACCESS_KEY_MAX_BACKOFF: Duration = Duration::from_secs(5);
 const MIN_S3_INTERMEDIATE_PART_SIZE: usize = 5 * (1 << 20);
 /// S3 maximum part size for multipart upload is 5GiB
 const MAX_S3_INTERMEDIATE_PART_SIZE: usize = 5 * (1 << 30);
+
+/// Resolves the (initial, maximum) intermediate part sizes from the knobs,
+/// clamped to what S3 accepts. When both are equal every intermediate part has
+/// the same size, which S3-compatible stores like Cloudflare R2 require.
+fn intermediate_part_sizes(min_knob: usize, max_knob: usize) -> (usize, usize) {
+    let max_part_size =
+        max_knob.clamp(MIN_S3_INTERMEDIATE_PART_SIZE, MAX_S3_INTERMEDIATE_PART_SIZE);
+    let min_part_size = min_knob.clamp(MIN_S3_INTERMEDIATE_PART_SIZE, max_part_size);
+    (min_part_size, max_part_size)
+}
 
 #[derive(Clone)]
 pub struct S3Storage<RT: Runtime> {
@@ -286,13 +297,14 @@ impl<RT: Runtime> Storage for S3Storage<RT> {
     #[fastrace::trace]
     async fn start_upload(&self) -> anyhow::Result<Box<BufferedUpload>> {
         let key: ObjectKey = self.runtime.new_uuid_v4().to_string().try_into()?;
+        let (min_part_size, max_part_size) = intermediate_part_sizes(
+            *STORAGE_MIN_INTERMEDIATE_PART_SIZE,
+            *STORAGE_MAX_INTERMEDIATE_PART_SIZE,
+        );
         let upload = BufferedUpload::new(
             self.start_upload_with_key(key).await?,
-            MIN_S3_INTERMEDIATE_PART_SIZE,
-            std::cmp::min(
-                MAX_S3_INTERMEDIATE_PART_SIZE,
-                *STORAGE_MAX_INTERMEDIATE_PART_SIZE,
-            ),
+            min_part_size,
+            max_part_size,
         );
         Ok(Box::new(upload))
     }
@@ -866,3 +878,50 @@ pub fn s3_bucket_name(use_case: &StorageUseCase) -> anyhow::Result<String> {
 }
 
 // Test below only works if you have AWS environment variables set
+
+#[cfg(test)]
+mod part_size_tests {
+    use super::{
+        intermediate_part_sizes,
+        MAX_S3_INTERMEDIATE_PART_SIZE,
+        MIN_S3_INTERMEDIATE_PART_SIZE,
+    };
+
+    const MIB: usize = 1 << 20;
+
+    #[test]
+    fn defaults_keep_doubling_from_5mib_to_200mib() {
+        assert_eq!(
+            intermediate_part_sizes(5 * MIB, 200 * MIB),
+            (5 * MIB, 200 * MIB)
+        );
+    }
+
+    #[test]
+    fn equal_knobs_give_uniform_parts_for_r2() {
+        // Cloudflare R2 requires every non-final part to have the same size.
+        assert_eq!(
+            intermediate_part_sizes(64 * MIB, 64 * MIB),
+            (64 * MIB, 64 * MIB)
+        );
+    }
+
+    #[test]
+    fn knobs_are_clamped_to_what_s3_accepts() {
+        // Below S3's minimum part size.
+        assert_eq!(
+            intermediate_part_sizes(1, 200 * MIB),
+            (MIN_S3_INTERMEDIATE_PART_SIZE, 200 * MIB)
+        );
+        // Min above max collapses to max (uniform).
+        assert_eq!(
+            intermediate_part_sizes(300 * MIB, 200 * MIB),
+            (200 * MIB, 200 * MIB)
+        );
+        // Max above S3's 5GiB limit.
+        assert_eq!(
+            intermediate_part_sizes(5 * MIB, 6 << 30),
+            (MIN_S3_INTERMEDIATE_PART_SIZE, MAX_S3_INTERMEDIATE_PART_SIZE)
+        );
+    }
+}

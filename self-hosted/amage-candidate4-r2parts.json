@@ -1,0 +1,24 @@
+{
+  "variant": "4-capacity-r2parts",
+  "base": "849a6fc605b5a910c9834b61a77c5475cc24d189",
+  "sourceRuntimeCommit": "4268bb2a41192924ea68ade229f7303620d672a6",
+  "patchSha256": "d4d633f3457a455f58d0803075d4dc12c2c60733b3947f38a4ec31253669076f",
+  "version": "amage-20260916-candidate.4-capacity-r2parts+base.849a6fc605b5.patch.d4d633f3457a",
+  "platform": "linux/amd64",
+  "image": "ghcr.io/amageweb/convex-backend:amage-20260916-candidate.4-capacity-r2parts-d4d633f3457a",
+  "expectedIndexDigest": "sha256:d223bcb12bd45fb6f5cc4f2c647301d17acd92c95c2163c980cc641b90b46bf3",
+  "published": true,
+  "defaultSiteConcurrency": 16,
+  "buildArgs": {
+    "CARGO_BUILD_JOBS": "6",
+    "VERGEN_GIT_SHA": "849a6fc605b5a910c9834b61a77c5475cc24d189",
+    "VERGEN_GIT_COMMIT_TIMESTAMP": "2026-09-05T23:58:23Z",
+    "AMAGE_PATCH_SHA256": "d4d633f3457a455f58d0803075d4dc12c2c60733b3947f38a4ec31253669076f",
+    "CONVEX_RELEASE_VERSION": "amage-20260916-candidate.4-capacity-r2parts+base.849a6fc605b5.patch.d4d633f3457a"
+  },
+  "publishedAt": "2026-09-16T23:05:47.943531+00:00",
+  "digestReference": "ghcr.io/amageweb/convex-backend@sha256:d223bcb12bd45fb6f5cc4f2c647301d17acd92c95c2163c980cc641b90b46bf3",
+  "amd64ManifestDigest": "sha256:6506c961b8e46841e49f40178dd6239fdebd4ae664cd8a6cc1fa419d58cfc888",
+  "configDigest": "sha256:3c7a7d167a2943a041e62d57e4d66b1c3886d9c3401fbdc24b885a61918a0c29",
+  "notes": "C4 + patch de partes uniformes de multipart (STORAGE_MIN_INTERMEDIATE_PART_SIZE) para Cloudflare R2. Validado contra R2 real em 16/09/2026 (uze.ai docs/R2_MIGRATION.md)."
+}
