@@ -1812,6 +1812,18 @@ pub static PARTITION_LOADER_MAX_STALE_SECS: LazyLock<Duration> =
 pub static STORAGE_MAX_INTERMEDIATE_PART_SIZE: LazyLock<usize> =
     LazyLock::new(|| env_config("STORAGE_MAX_INTERMEDIATE_PART_SIZE", 200 * (1 << 20)));
 
+/// Initial size of each intermediate part of an S3 multipart upload. The part
+/// size starts here and doubles on every part up to
+/// STORAGE_MAX_INTERMEDIATE_PART_SIZE. S3-compatible stores that require every
+/// non-final part to have the same size (Cloudflare R2) need this knob equal to
+/// STORAGE_MAX_INTERMEDIATE_PART_SIZE, which makes every intermediate part
+/// exactly that size; the maximum object size is then 10000 times that value.
+/// Values below S3's 5MiB minimum or above the max part size are clamped.
+///
+/// Defaults to 5MiB (unchanged doubling behavior).
+pub static STORAGE_MIN_INTERMEDIATE_PART_SIZE: LazyLock<usize> =
+    LazyLock::new(|| env_config("STORAGE_MIN_INTERMEDIATE_PART_SIZE", 5 * (1 << 20)));
+
 /// Minimum number of milliseconds a commit needs to take to send traces to
 /// honeycomb.
 pub static COMMIT_TRACE_THRESHOLD: LazyLock<Duration> =

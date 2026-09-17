@@ -1,0 +1,36 @@
+{
+  "base": "849a6fc605b5a910c9834b61a77c5475cc24d189",
+  "patchPaths": [
+    "crates",
+    "Cargo.toml",
+    "Cargo.lock",
+    "self-hosted/docker-build",
+    "rust-toolchain",
+    ".cargo"
+  ],
+  "patchSha256": "910724b451dcf8dc74b70f065d9d5b81f816dd72abd8bbcc6b1023156fa391aa",
+  "patchPrefixes": {
+    "source": "c/",
+    "destination": "i/"
+  },
+  "version": "amage-20260917-candidate.6-explain-r10-r2parts+base.849a6fc605b5.patch.910724b451dc",
+  "variant": "6-explain-r10-r2parts",
+  "published": true,
+  "publishedAt": "2026-09-17T13:56:38.089873+00:00",
+  "platform": "linux/amd64",
+  "digestReference": "ghcr.io/amageweb/convex-backend@sha256:1dd2b38d3f9e7169f38cac9790ac32afa5d7f9ec28d2b417cdc80d6fc0b87e5f",
+  "sourceRuntimeCommit": "af613dc7af05010a9c7f7d892185383bac9667a9",
+  "buildSourceTree": "0e51ca42303bc36ef84a11553ce406d9573275dd",
+  "c5Reference": "a985c6521f926bee731578d120eed0576a457cd4",
+  "buildArgs": {
+    "CARGO_BUILD_JOBS": "6",
+    "VERGEN_GIT_SHA": "849a6fc605b5a910c9834b61a77c5475cc24d189",
+    "VERGEN_GIT_COMMIT_TIMESTAMP": "2026-09-06T00:00:00Z",
+    "AMAGE_PATCH_SHA256": "910724b451dcf8dc74b70f065d9d5b81f816dd72abd8bbcc6b1023156fa391aa",
+    "CONVEX_RELEASE_VERSION": "amage-20260917-candidate.6-explain-r10-r2parts+base.849a6fc605b5.patch.910724b451dc"
+  },
+  "image": "ghcr.io/amageweb/convex-backend:amage-20260917-candidate.6-explain-r10-r2parts-910724b451dc",
+  "expectedIndexDigest": "sha256:1dd2b38d3f9e7169f38cac9790ac32afa5d7f9ec28d2b417cdc80d6fc0b87e5f",
+  "notes": "C6 explain-r10 + patch de partes uniformes de multipart (STORAGE_MIN_INTERMEDIATE_PART_SIZE) para Cloudflare R2. Validado contra R2 real em SQLite e em Postgres (uze.ai docs/R2_MIGRATION.md).",
+  "configDigest": "sha256:06e494e5ff6b187c36f8ef0b0379a8460e5c0f788e507b4c370ffd5845d213e3"
+}
