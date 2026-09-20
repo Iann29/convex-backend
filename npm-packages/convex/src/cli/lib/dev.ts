@@ -60,6 +60,8 @@ export async function devAgainstDeployment(
     debugNodeApis: boolean;
     liveComponentSources: boolean;
     pushAllModules: boolean;
+    verifiedJson?: boolean | undefined;
+    verifiedWait?: number | undefined;
   },
 ) {
   const logManager = new LogManager(devOptions.tailLogs);
@@ -150,6 +152,8 @@ export async function devAgainstDeployment(
         largeIndexDeletionCheck: "no verification", // `convex dev` can’t push to prod
         warnOnSlowSchemaValidation: true,
         message: null,
+        verifiedJson: devOptions.verifiedJson,
+        verifiedWait: devOptions.verifiedWait,
       },
       devOptions,
     ),

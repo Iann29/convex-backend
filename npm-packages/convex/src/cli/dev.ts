@@ -152,6 +152,7 @@ Same format as .env.local or .env files, and overrides them.`,
     ),
   )
   .addOption(new Option("--skip-push").default(false).hideHelp())
+  .addVerifiedDeployOptions()
   .addOption(new Option("--admin-key <adminKey>").hideHelp())
   .addOption(new Option("--url <url>").hideHelp())
   // Options for testing
@@ -289,7 +290,11 @@ Same format as .env.local or .env files, and overrides them.`,
                   : {}),
                 backendVersion: localOptions.backendVersion,
               },
-              devOptions,
+              {
+                ...devOptions,
+                verifiedJson: cmdOptions.verifiedJson,
+                verifiedWait: cmdOptions.verifiedWait,
+              },
             ),
           ]
         : []),

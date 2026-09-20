@@ -459,6 +459,8 @@ export async function deployToDeployment(
     skipWorkosCheck?: boolean | undefined;
     allowDeletingLargeIndexes: boolean;
     message: string | null;
+    verifiedJson?: boolean | undefined;
+    verifiedWait?: number | undefined;
   },
 ) {
   const { url, adminKey } = credentials;
@@ -509,6 +511,8 @@ export async function deployToDeployment(
       : "ask for confirmation",
     warnOnSlowSchemaValidation: true,
     message: options.message,
+    verifiedJson: options.verifiedJson,
+    verifiedWait: options.verifiedWait,
   };
   showSpinner(`Deploying to ${url}...${options.dryRun ? " [dry run]" : ""}`);
   await runPush(ctx, pushOptions);

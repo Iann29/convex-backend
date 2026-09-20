@@ -60,6 +60,7 @@ export const deploy = new Command("deploy")
   )
   .allowExcessArguments(false)
   .addDeployOptions()
+  .addVerifiedDeployOptions()
   .addOption(
     new Option(
       "--preview-run <functionName>",
@@ -380,6 +381,8 @@ async function deployToExistingDeployment(
     skipWorkosCheck?: boolean | undefined;
     allowDeletingLargeIndexes: boolean;
     message: string | null;
+    verifiedJson?: boolean | undefined;
+    verifiedWait?: number | undefined;
   },
 ) {
   const deploymentToActOn = await loadSelectedDeploymentCredentials(

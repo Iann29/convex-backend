@@ -69,6 +69,17 @@ declare module "@commander-js/extra-typings" {
     >;
 
     /**
+     * Adds options for pushes to protected deployments (verified deploys).
+     */
+    addVerifiedDeployOptions(): Command<
+      Args,
+      Opts & {
+        verifiedJson?: boolean;
+        verifiedWait?: number;
+      }
+    >;
+
+    /**
      * Adds options for `self-host` subcommands.
      */
     addSelfHostOptions(): Command<
@@ -392,6 +403,20 @@ Command.prototype.addDeployOptions = function () {
         .default(false)
         .hideHelp(),
     );
+};
+
+Command.prototype.addVerifiedDeployOptions = function () {
+  return this.addOption(
+    new Option(
+      "--verified-json",
+      "On protected deployments, print one JSON line per verification attempt to stdout.",
+    ),
+  ).addOption(
+    new Option(
+      "--verified-wait <seconds>",
+      "On protected deployments with manual rollout, how long to wait for the deployment authority (default: 600; 0 exits immediately).",
+    ).argParser(parseInteger),
+  );
 };
 
 Command.prototype.addSelfHostOptions = function () {
