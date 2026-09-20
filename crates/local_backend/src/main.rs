@@ -37,6 +37,7 @@ use local_backend::{
         LocalConfig,
         Subcommand,
     },
+    initialize_deploy_gate,
     make_app,
     router::{
         http_action_routes,
@@ -141,6 +142,7 @@ async fn run_server(runtime: ProdRuntime, config: LocalConfig) -> anyhow::Result
 }
 
 async fn run_server_inner(runtime: ProdRuntime, config: LocalConfig) -> anyhow::Result<()> {
+    initialize_deploy_gate()?;
     // Used to receive fatal errors from the database or /preempt endpoint.
     let (preempt_tx, preempt_rx) = oneshot::channel();
     let preempt_signal = ShutdownSignal::new(preempt_tx);

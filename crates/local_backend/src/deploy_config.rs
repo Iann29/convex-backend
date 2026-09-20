@@ -276,6 +276,7 @@ pub async fn push_config_handler(
     request_metadata: RequestMetadata,
     config: ConfigJson,
 ) -> anyhow::Result<(Identity, PushAnalytics, PushMetrics)> {
+    crate::bendvex::reject_legacy()?;
     let identity = application
         .app_auth()
         .check_key(config.admin_key)

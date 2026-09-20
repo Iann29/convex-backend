@@ -306,8 +306,11 @@ pub struct AnalyzedComponent {
 #[debug_handler]
 pub async fn start_push(
     State(st): State<LocalAppState>,
-    Json(req): Json<StartPushRequest>,
+    Json(raw): Json<JsonValue>,
 ) -> Result<impl IntoResponse, HttpResponseError> {
+    let req: StartPushRequest = serde_json::from_value(raw.clone()).map_err(|e| {
+        anyhow::Error::new(ErrorMetadata::bad_request("InvalidConfig", e.to_string()))
+    })?;
     let _identity = must_be_admin_from_key(
         st.application.app_auth(),
         st.instance_name.clone(),
@@ -315,6 +318,7 @@ pub async fn start_push(
     )
     .await?;
     _identity.require_operation(keybroker::DeploymentOp::Deploy)?;
+    let mut gate = crate::bendvex::start(raw, &req).await?;
     let config = req.into_project_config().map_err(|e| {
         anyhow::Error::new(ErrorMetadata::bad_request("InvalidConfig", e.to_string()))
     })?;
@@ -322,9 +326,9 @@ pub async fn start_push(
         st.application.start_push(&config).await.map_err(|e| {
             e.wrap_error_message(|msg| format!("Hit an error while pushing:\n{msg}"))
         })?;
-    Ok(Json(SerializedStartPushResponse::try_from(
-        result.response,
-    )?))
+    let response = SerializedStartPushResponse::try_from(result.response)?;
+    crate::bendvex::remember(&mut gate, &response)?;
+    Ok(Json(response))
 }
 
 // This endpoint is similar to `start_push`, but it doesn’t save the schema (so
@@ -335,6 +339,7 @@ pub async fn evaluate_push(
     MtState(st): MtState<LocalAppState>,
     Json(req): Json<StartPushRequest>,
 ) -> Result<impl IntoResponse, HttpResponseError> {
+    crate::bendvex::reject_legacy()?;
     let _identity = must_be_admin_from_key(
         st.application.app_auth(),
         st.instance_name.clone(),
@@ -362,6 +367,7 @@ pub async fn evaluate_schema(
     MtState(st): MtState<LocalAppState>,
     Json(req): Json<StartPushRequest>,
 ) -> Result<impl IntoResponse, HttpResponseError> {
+    crate::bendvex::reject_legacy()?;
     let identity = must_be_admin_from_key(
         st.application.app_auth(),
         st.instance_name.clone(),
@@ -432,6 +438,7 @@ pub async fn finish_push_internal(
     .await?;
     identity.require_operation(keybroker::DeploymentOp::Deploy)?;
 
+    let _gate = crate::bendvex::finish(&req.start_push).await?;
     let start_push = StartPushResponse::try_from(req.start_push)?;
     let message = req.message.map(PushMessage::try_from).transpose()?;
 

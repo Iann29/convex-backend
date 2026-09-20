@@ -87,6 +87,8 @@ mod app_metrics;
 mod args_structs;
 pub mod authentication;
 pub mod beacon;
+mod bendvex;
+pub use bendvex::initialize as initialize_deploy_gate;
 pub mod canonical_urls;
 pub mod config;
 pub mod custom_headers;
@@ -170,6 +172,7 @@ pub async fn make_app(
     zombify_rx: async_broadcast::Receiver<()>,
     preempt_tx: ShutdownSignal,
 ) -> anyhow::Result<LocalAppState> {
+    bendvex::initialize()?;
     let key_broker = config.key_broker()?;
     let in_process_searcher = Arc::new(InProcessSearcher::new(runtime.clone())?);
     let searcher: Arc<dyn Searcher> = in_process_searcher.clone();

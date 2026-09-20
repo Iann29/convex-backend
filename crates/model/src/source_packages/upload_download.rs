@@ -1,6 +1,9 @@
 use std::{
     collections::BTreeMap,
-    sync::Arc,
+    sync::{
+        Arc,
+        Mutex,
+    },
 };
 
 use anyhow::Context as AnyhowContext;
@@ -168,7 +171,7 @@ pub async fn download_package(
 ) -> anyhow::Result<BTreeMap<CanonicalizedModulePath, ModuleConfig>> {
     let object_key = storage.fully_qualified_key(&package.storage_key);
     let object_size = package.package_size.zipped_size_bytes as u64;
-    let stream = if object_size > 0 {
+    let mut stream = if object_size > 0 {
         // N.B.: `get_fq_object_exact_range` is slightly more efficient than just
         // `get()` since it doesn't need to discover the object size
         storage.get_fq_object_exact_range(&object_key, 0..object_size)
@@ -179,8 +182,24 @@ pub async fn download_package(
             .await?
             .with_context(|| format!("Src Pkg storage key not found?? {:?}", package.storage_key))?
     };
-    // TODO: Check that the hash matches.
-    let mut reader = ZipFileReader::new(stream.into_tokio_reader());
+    // Hash compressed bytes, including the central directory, before exposing
+    // modules.
+    let hash = Arc::new(Mutex::new(Sha256::new()));
+    let stream_hash = hash.clone();
+    stream.stream = stream
+        .stream
+        .map(move |chunk| {
+            if let Ok(bytes) = &chunk {
+                stream_hash
+                    .lock()
+                    .map_err(|_| std::io::Error::other("Source package hash lock poisoned"))?
+                    .update(bytes);
+            }
+            chunk
+        })
+        .boxed();
+    let mut input = stream.into_tokio_reader();
+    let mut reader = ZipFileReader::new(&mut input);
 
     let mut source = BTreeMap::new();
     let mut source_maps = BTreeMap::new();
@@ -217,6 +236,17 @@ pub async fn download_package(
     while !reader.finished() {
         anyhow::ensure!(reader.entry_reader().await?.is_none());
     }
+    drop(reader);
+    tokio::io::copy(&mut input, &mut tokio::io::sink()).await?;
+    let actual_hash = hash
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Source package hash lock poisoned"))?
+        .clone()
+        .finalize();
+    anyhow::ensure!(
+        actual_hash == package.sha256,
+        "Source package SHA-256 mismatch"
+    );
 
     // Make sure metadata.json looks right
     let metadata_json = metadata_json.context("metadata.json not found")?;
@@ -258,4 +288,52 @@ pub async fn download_package(
         out.insert(path, config);
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use runtime::prod::ProdRuntime;
+    use storage::LocalDirStorage;
+
+    use super::*;
+
+    #[test]
+    fn valid_zip_requires_matching_source_package_hash() -> anyhow::Result<()> {
+        let tokio = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let storage: Arc<dyn Storage> = Arc::new(LocalDirStorage::new(ProdRuntime::new(&tokio))?);
+        tokio.block_on(async {
+            let path: CanonicalizedModulePath = "tenant.js".parse()?;
+            let module = ModuleConfig {
+                path: path.clone().into(),
+                source: ModuleSource::new("export const tenant = 'alpha';"),
+                source_map: None,
+                environment: ModuleEnvironment::Isolate,
+            };
+            let (storage_key, sha256, package_size) = upload_package(
+                BTreeMap::from([(path.clone(), &module)]),
+                storage.clone(),
+                None,
+            )
+            .await?;
+            let mut package = SourcePackage {
+                storage_key,
+                sha256,
+                external_deps_package_id: None,
+                package_size,
+                node_version: None,
+            };
+            let downloaded = download_package(storage.clone(), &package).await?;
+            assert_eq!(downloaded.get(&path), Some(&module));
+            // The ZIP remains valid: only the expected digest changes. Without
+            // the download integrity check this exact request succeeds.
+            package.sha256 = Sha256::hash(b"a different source package");
+            let error = download_package(storage, &package).await.unwrap_err();
+            assert!(error
+                .to_string()
+                .contains("Source package SHA-256 mismatch"));
+            Ok(())
+        })
+    }
 }

@@ -253,6 +253,7 @@ pub async fn prepare_schema_handler(
     request_metadata: RequestMetadata,
     req: PrepareSchemaArgs,
 ) -> Result<(Json<PrepareSchemaResponse>, bool), HttpResponseError> {
+    crate::bendvex::reject_legacy()?;
     let bundle = req.bundle.try_into()?;
     let identity = must_be_admin_from_key(
         st.application.app_auth(),
