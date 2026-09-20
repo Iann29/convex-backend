@@ -663,3 +663,122 @@ não a arquivos publicados neste repositório. A prova nativa, isoladamente,
 não declara integração Synapse ponta a ponta, release ou ganho de desempenho.
 A redução do corpo HTTP não substitui uma comparação de overhead controlada;
 a confirmatória posterior R9 permaneceu inconclusiva, conforme registrado acima.
+
+# Candidata 7 — verified deploy (`amage.verified-deploy/1`)
+
+Imagem **local e não publicada** (`published: false` no manifesto; nenhum
+`docker push`, nenhum digest de registry). O que existe é o artefato
+construído em 20/09/2026 nesta máquina, identificado pelo
+[manifesto C7](amage-candidate7.json), e a evidência de uso real registrada
+no laboratório Bendvex (`evidence/c7/e2e.json`, `e2e-postgres.json`).
+
+## Identidade (de `amage-candidate7.json`)
+
+| Campo | Valor |
+|---|---|
+| base upstream | `849a6fc605b5a910c9834b61a77c5475cc24d189` |
+| referência C6 | `41f472c767321302f71ea4419ff71e4bd5ec686d` (`c6Reference`) |
+| commit do gate (`patchCommit`) | `874af9e9ce5e9e800d2531cdefeeb53a312d43c3` |
+| commit da CLI (`cliCommit`) | `3c59c5f07459e0c96310f4673d62dfaaa6e7799a` — fora de `patchPaths`, não entra na imagem |
+| commit do manifesto/labels/script | `ad209700a83860a31afb03dadf9b6217d80fd158` |
+| `variant` / `protocol` / `capabilityRoute` | `7-verified-deploy` / `amage.verified-deploy/1` / `/api/amage/verified_deploy` |
+| `version` | `amage-20260920-candidate.7-verified-deploy+base.849a6fc605b5.patch.cfbb0ffd9312` |
+| `image` (tag local) | `amage-convex-backend:amage-20260920-candidate.7-verified-deploy-cfbb0ffd9312` |
+| `imageId` | `sha256:d3ffc0cc450b93c54cb7763ba377ef3557fde06838d4df6ca68ead3f31dedeab` |
+| `amd64ManifestDigest` | `sha256:677cd99fa5b58c785e86f10a9a76f71de4ac59d3a2903a7b5a60d2fe50a2eadf` |
+| `configDigest` | `sha256:a3d86f11039cc923bd82ce11e449c6d08b930d4d4c03677e05b39b23d04f438d` |
+| `binarySha256` (`/convex/convex-local-backend`) | `cd914b7f9fc6ae0d76c613424375406098090dd90228f621acff8b955326b778` |
+| `patchSha256` (`a/ b/`) | `cfbb0ffd93124319c902e7abae3283e488b19f3d684c6c92bd3dd0785157c305` |
+| `patchSha256MnemonicPrefixes` (`c/ i/`) | `13643fb6607a2f91f43a5236bfe1ae1f48f627decb600b746defc950a7ef30ad` |
+| `platform` / `builtAt` | `linux/amd64` / `2026-09-20T17:40:31.901857364-03:00` |
+
+Labels observados na imagem: `org.amage.base-revision`, `org.amage.patch-sha256`,
+`org.amage.patch-commit`, `org.amage.verified-deploy.protocol`,
+`org.opencontainers.image.revision`, `org.opencontainers.image.version`,
+`org.opencontainers.repository`. Os dois novos (`patch-commit`,
+`verified-deploy.protocol`) foram acrescentados em
+[`docker-build/Dockerfile.backend`](docker-build/Dockerfile.backend) (linhas
+124-125 e 131-132) ao lado dos labels AMAGE existentes; nenhum label anterior
+foi reescrito.
+
+## O que mudou em `crates` (C6 `41f472c76` → `ad209700a`)
+
+`git diff --stat 41f472c76 ad209700a -- crates`: 10 arquivos, +1042/−8.
+
+| Arquivo | Mudança |
+|---|---|
+| `crates/local_backend/src/bendvex.rs` | novo módulo: gate `amage.verified-deploy/1` — leitura da chave no arranque, capability, JSON canônico, verificação do envelope (assinatura, digest do pedido, instância, janela, forma do pedido), pendente start→finish |
+| `crates/keybroker/src/verified_deploy.rs` (+ `pub mod` em `lib.rs`) | `verify_ed25519` (aws-lc-rs, já dependência) e `parse_rfc3339` (chrono); signer só em `cfg(test)`/`feature = "testing"` |
+| `crates/local_backend/src/deploy_config2.rs` | `start_push` preserva o JSON bruto, chama o gate depois da admin key e antes de `Application.start_push`, grava o hash da resposta; `evaluate_push`/`evaluate_schema` recusados sob proteção; `finish_push_internal` consome o pendente |
+| `crates/local_backend/src/deploy_config.rs`, `schema.rs` | `push_config` e `prepare_schema` recusados sob proteção |
+| `crates/local_backend/src/router.rs` | rota `GET /api/amage/verified_deploy` (sem autenticação) |
+| `crates/local_backend/src/lib.rs`, `main.rs` | inicialização do gate em `make_app` e em `run_server_inner` |
+| `crates/model/src/source_packages/upload_download.rs` | SHA-256 dos bytes ZIP baixados conferido antes de expor módulos (incondicional; vem do patch experimental `49edc9a1d`) |
+
+Sem alteração em `Cargo.toml`/`Cargo.lock`. Testes: `bendvex::tests` (canonicalização com vetor cruzado com Python, capability, receipts válidas/forjadas/adulteradas, janela, recusas de forma, pendente), `keybroker::verified_deploy::tests` (RFC 8032, round trip, RFC 3339), `upload_download::tests::valid_zip_requires_matching_source_package_hash`.
+
+## Variáveis de ambiente e capability
+
+| Variável | Efeito |
+|---|---|
+| `AMAGE_VERIFIED_DEPLOY_PUBKEY` | 64 hex minúsculos (32 bytes Ed25519). Presente ⇒ modo **protegido**: `start_push` exige `amageVerified` assinado por essa chave; sem envelope `400 VerifiedDeployRequired`, inválido `400 VerifiedDeployRejected`; `push_config`, `prepare_schema`, `evaluate_push`, `evaluate_schema` recusados. Ausente ⇒ comportamento upstream. Valor inválido aborta o arranque; imutável no processo |
+| `AMAGE_VERIFIED_DEPLOY_SUPERVISOR_URL` | opcional; só anunciada na capability |
+
+`GET /api/amage/verified_deploy` responde
+`{"protocol":"amage.verified-deploy/1","supported":true,"required":<bool>,"target":{"instanceName":"…"}}`
+mais `verifierKeyId` (SHA-256 da chave pública) e `supervisorUrl` quando
+protegido. Um backend anterior à C7 responde 404 e a CLI o trata como não
+protegido. Nenhuma chave, credencial ou policy é embutida na imagem.
+
+O contrato completo (envelope, JSON canônico, mensagens de erro, API do
+supervisor, CLI) está no laboratório: `docs/c7-protocol.md`,
+`docs/c7-trust-boundaries.md`, `docs/c7-versioning.md`, `docs/c7-failure-ux.md`.
+
+## Como construir
+
+```bash
+self-hosted/build-candidate7.sh                        # árvore limpa e commitada
+CANDIDATE_DATE=20260920 self-hosted/build-candidate7.sh    # repetir a string de versão
+ALLOW_DIRTY=1 self-hosted/build-candidate7.sh          # árvore suja; o manifesto registra
+SKIP_BUILD=1 self-hosted/build-candidate7.sh           # só re-registrar uma imagem já construída
+```
+
+O script lê `base`, `patchCommit`, `cliCommit`, `patchPaths`, `variant` e
+`protocol` do manifesto, exige que `patchCommit` e `cliCommit` sejam ancestrais
+de `HEAD`, calcula o hash do patch com o mesmo comando de
+`self-hosted/test-candidate.mjs`, roda `sudo -n docker build --platform
+linux/amd64 -f self-hosted/docker-build/Dockerfile.backend` com os build-args
+`VERGEN_GIT_SHA`, `VERGEN_GIT_COMMIT_TIMESTAMP`, `AMAGE_PATCH_SHA256`,
+`AMAGE_PATCH_COMMIT`, `AMAGE_PROTOCOL`, `CONVEX_RELEASE_VERSION`, etiqueta a
+imagem localmente (nunca faz push), confere labels e `--version` do binário e
+grava a identidade observada de volta no manifesto. Uma reconstrução **não** é
+byte-reproduzível (entradas APT/runtime flutuam): `imageId`/`configDigest`
+identificam o artefato que foi testado, não "qualquer build deste commit".
+
+## Como conferir o hash do patch
+
+```bash
+git diff --binary --no-ext-diff --no-color --src-prefix=a/ --dst-prefix=b/ \
+  --abbrev=9 849a6fc605b5a910c9834b61a77c5475cc24d189 \
+  ad209700a83860a31afb03dadf9b6217d80fd158 \
+  -- crates Cargo.toml Cargo.lock self-hosted/docker-build rust-toolchain .cargo \
+  | sha256sum
+```
+
+Resultado: `cfbb0ffd93124319c902e7abae3283e488b19f3d684c6c92bd3dd0785157c305`
+(reproduzido em 20/09/2026; é o valor do label `org.amage.patch-sha256` e da
+string de versão). Com `--src-prefix=c/ --dst-prefix=i/` — o comando histórico
+desta página para a C6 — o resultado é
+`13643fb6607a2f91f43a5236bfe1ae1f48f627decb600b746defc950a7ef30ad`
+(`patchSha256MnemonicPrefixes`). `git diff … 874af9e9c` sozinho **não**
+reproduz o hash gravado, porque a mudança de labels do Dockerfile (commitada em
+`ad209700a`) faz parte do diff hasheado.
+
+## Estado
+
+Imagem local, sem publicação, sem entrada no catálogo do Synapse e sem
+avaliação de desempenho. O uso real registrado é o E2E do laboratório
+(`tools/c7_e2e.py`: container desta imagem em modo protegido, supervisor real,
+`npx convex dev/deploy` com a CLI AMAGE 1.45.0; CLI upstream 1.44.0 recusada
+com `400 VerifiedDeployRequired`). Publicar, incluir no catálogo e medir são
+passos posteriores e não estão implícitos neste registro.
