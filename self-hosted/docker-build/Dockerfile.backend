@@ -121,11 +121,15 @@ FROM ubuntu:noble@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a
 ARG VERGEN_GIT_SHA
 ARG CONVEX_RELEASE_VERSION
 ARG AMAGE_PATCH_SHA256
+ARG AMAGE_PATCH_COMMIT
+ARG AMAGE_PROTOCOL
 LABEL org.opencontainers.repository=https://github.com/get-convex/convex-backend
 LABEL org.opencontainers.image.revision=${VERGEN_GIT_SHA}
 LABEL org.opencontainers.image.version=${CONVEX_RELEASE_VERSION}
 LABEL org.amage.base-revision=${VERGEN_GIT_SHA}
 LABEL org.amage.patch-sha256=${AMAGE_PATCH_SHA256}
+LABEL org.amage.patch-commit=${AMAGE_PATCH_COMMIT}
+LABEL org.amage.verified-deploy.protocol=${AMAGE_PROTOCOL}
 
 WORKDIR /convex
 
