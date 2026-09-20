@@ -6,6 +6,7 @@ mod legacy_encryptor;
 mod metrics;
 mod operations;
 mod secret;
+pub mod verified_deploy;
 pub use pb::convex_identity::DeploymentOperation;
 pub use sync_types::UserIdentityAttributes;
 

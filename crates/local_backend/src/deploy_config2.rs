@@ -318,7 +318,7 @@ pub async fn start_push(
     )
     .await?;
     _identity.require_operation(keybroker::DeploymentOp::Deploy)?;
-    let mut gate = crate::bendvex::start(raw, &req).await?;
+    let mut gate = crate::bendvex::start(raw, &req, &st.instance_name).await?;
     let config = req.into_project_config().map_err(|e| {
         anyhow::Error::new(ErrorMetadata::bad_request("InvalidConfig", e.to_string()))
     })?;

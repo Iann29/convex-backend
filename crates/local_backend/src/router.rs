@@ -410,6 +410,12 @@ pub fn router(st: LocalAppState) -> Router {
         .merge(cli_routes)
         .merge(dashboard_routes)
         .merge(streaming_export_routes())
+        // Unauthenticated, like `/instance_name`: tells the CLI whether this
+        // deployment requires AMAGE verified deploys and which key signs them.
+        .route(
+            "/amage/verified_deploy",
+            get(crate::bendvex::capability_handler),
+        )
         .nest("/actions", action_callback_routes(st.clone()))
         .nest("/export", snapshot_export_routes)
         .nest("/streaming_import", streaming_import_routes())
