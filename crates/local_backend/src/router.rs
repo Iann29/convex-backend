@@ -416,6 +416,16 @@ pub fn router(st: LocalAppState) -> Router {
             "/amage/verified_deploy",
             get(crate::bendvex::capability_handler),
         )
+        // Authoritative installation state of a protected deployment (§9);
+        // 404 when the deployment is not protected.
+        .route(
+            "/amage/installations",
+            get(crate::bendvex::installations_handler),
+        )
+        .route(
+            "/amage/installations/{installation_id}",
+            get(crate::bendvex::installation_handler),
+        )
         .nest("/actions", action_callback_routes(st.clone()))
         .nest("/export", snapshot_export_routes)
         .nest("/streaming_import", streaming_import_routes())

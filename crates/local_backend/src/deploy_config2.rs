@@ -311,14 +311,16 @@ pub async fn start_push(
     let req: StartPushRequest = serde_json::from_value(raw.clone()).map_err(|e| {
         anyhow::Error::new(ErrorMetadata::bad_request("InvalidConfig", e.to_string()))
     })?;
-    let _identity = must_be_admin_from_key(
+    // Protected deployments judge the receipt token first (§6), so its
+    // failures carry the verified-deploy codes rather than `BadAdminKey`.
+    let mut gate = crate::bendvex::start(&st, &raw, &req).await?;
+    let identity = must_be_admin_from_key(
         st.application.app_auth(),
         st.instance_name.clone(),
         req.admin_key.clone(),
     )
     .await?;
-    _identity.require_operation(keybroker::DeploymentOp::Deploy)?;
-    let mut gate = crate::bendvex::start(raw, &req, &st.instance_name).await?;
+    identity.require_operation(keybroker::DeploymentOp::Deploy)?;
     let config = req.into_project_config().map_err(|e| {
         anyhow::Error::new(ErrorMetadata::bad_request("InvalidConfig", e.to_string()))
     })?;
@@ -396,6 +398,7 @@ pub async fn wait_for_schema(
     MtState(st): MtState<LocalAppState>,
     Json(req): Json<WaitForSchemaRequest>,
 ) -> Result<impl IntoResponse, HttpResponseError> {
+    crate::bendvex::wait_for_schema(&st, &req.admin_key)?;
     let identity = must_be_admin_from_key(
         st.application.app_auth(),
         st.instance_name.clone(),
@@ -430,6 +433,7 @@ pub async fn finish_push_internal(
     request_metadata: RequestMetadata,
     req: FinishPushRequest,
 ) -> anyhow::Result<(SerializedFinishPushDiff, Option<common::types::Timestamp>)> {
+    let gate = crate::bendvex::finish(st, &req.admin_key, &req.start_push, req.dry_run).await?;
     let identity = must_be_admin_from_key(
         st.application.app_auth(),
         st.instance_name.clone(),
@@ -438,9 +442,13 @@ pub async fn finish_push_internal(
     .await?;
     identity.require_operation(keybroker::DeploymentOp::Deploy)?;
 
-    let _gate = crate::bendvex::finish(&req.start_push).await?;
     let start_push = StartPushResponse::try_from(req.start_push)?;
-    let message = req.message.map(PushMessage::try_from).transpose()?;
+    // On a protected deployment the audit-log message is the provenance line
+    // of the installation (§7), never the client's text.
+    let message = match &gate {
+        Some(gate) => Some(PushMessage::try_from(gate.provenance().to_string())?),
+        None => req.message.map(PushMessage::try_from).transpose()?,
+    };
 
     // We can't actually run `finish_push` in a dry run, since we rolled back all of
     // our changes during start push.
@@ -455,6 +463,9 @@ pub async fn finish_push_internal(
         .finish_push(identity, request_metadata, start_push, message)
         .await
         .map_err(|e| e.wrap_error_message(|msg| format!("Hit an error while pushing:\n{msg}")))?;
+    if let Some(gate) = gate {
+        gate.finished();
+    }
     Ok((SerializedFinishPushDiff::try_from(resp)?, Some(ts)))
 }
 

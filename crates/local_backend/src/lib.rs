@@ -10,10 +10,7 @@ use std::{
     time::Duration,
 };
 
-use ::authentication::{
-    access_token_auth::NullAccessTokenAuth,
-    application_auth::ApplicationAuth,
-};
+use ::authentication::application_auth::ApplicationAuth;
 use ::usage_limits::NoopUsageLimitNotifier;
 use application::{
     self,
@@ -282,7 +279,9 @@ pub async fn make_app(
         Arc::new(RedactLogsToClient::new(config.redact_logs_to_client)),
         Arc::new(ApplicationAuth::new(
             key_broker.clone(),
-            Arc::new(NullAccessTokenAuth),
+            // A protected deployment accepts the supervisor's install receipt
+            // as a Deploy-only admin identity (amage.verified-deploy/2 §5).
+            bendvex::access_token_auth(config.name())?,
             runtime.clone(),
         )),
         QueryCache::new(*UDF_CACHE_MAX_SIZE),
