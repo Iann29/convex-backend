@@ -787,7 +787,7 @@ passos posteriores e não estão implícitos neste registro.
 
 Segunda imagem da **mesma** C7 (a versão não mudou de nome: mesma linhagem,
 mesmo `variant`, novo patch), construída em 20/09/2026 de árvore limpa
-(`buildTreeDirty: []`, `headCommit 2fe002eb0`). Local, não publicada. O que
+(`buildTreeDirty: []`, `headCommit d46388dc2`). Local, não publicada. O que
 mudou é o protocolo do gate: a receipt de instalação assinada pelo supervisor
 passa a ser a **credencial** de deploy — enviada no campo `adminKey` de
 `start_push`/`wait_for_schema`/`finish_push` como token
@@ -805,16 +805,16 @@ Contrato normativo no laboratório: `docs/c7-hardening-contract.md`.
 | base upstream / referência C6 | `849a6fc605b5a910c9834b61a77c5475cc24d189` / `41f472c767321302f71ea4419ff71e4bd5ec686d` |
 | commit do gate v2 (`patchCommit`) | `a425376130dcc30b99184862d4222103a28504b3` |
 | commit da CLI (`cliCommit`) | `9676ecb49213e70f37c0719dcec7f4372ef079d2` — fora de `patchPaths` |
-| commit do manifesto que apontou para o gate v2 | `2fe002eb08ffe1ae851838135197310427e5a120` (árvore construída) |
+| commit do manifesto que apontou para o gate v2 | `d46388dc20978fb89935a11727a1d716cabacb70` (árvore construída) |
 | `protocol` | `amage.verified-deploy/2` |
-| `version` | `amage-20260920-candidate.7-verified-deploy+base.849a6fc605b5.patch.e04798b11797` |
-| `image` (tag local) | `amage-convex-backend:amage-20260920-candidate.7-verified-deploy-e04798b11797` |
-| `imageId` | `sha256:eb0f75c0c93efbe9727b7bede1a983a42bd328c6915fbc822155b9a9b8811761` |
-| `amd64ManifestDigest` | `sha256:823a645da867ceef1418f0aa5aafdcac65d18646ee86e837c39cd17bfe128aa9` |
-| `configDigest` | `sha256:c33418587cf7fe960ab7d174af1172c69c6710d87da138fe85ceb8f91cc32d55` |
-| `binarySha256` (`/convex/convex-local-backend`) | `77693de4aff9b87472b1c446f1b4cf55def25a002894d621b0bea76329ac5113` |
-| `patchSha256` (`a/ b/`) | `e04798b11797a689e0d467e35238cf8299e578da8e23836639f68786004c8ff5` |
-| `platform` / `builtAt` | `linux/amd64` / `2026-09-20T22:54:07.178632682-03:00` |
+| `version` | `amage-20260920-candidate.7-verified-deploy+base.849a6fc605b5.patch.8d37a6040498` |
+| `image` (tag local) | `amage-convex-backend:amage-20260920-candidate.7-verified-deploy-8d37a6040498` |
+| `imageId` | `sha256:d168ad9f382a14fe8c7593ef4e3768f4b51ada5f241a8ae1c48e5508a61b9dcf` |
+| `amd64ManifestDigest` | `sha256:8352252100862e7cdd8fcc8430734a8c7403d0507e12c5bf8910dd8954e240b1` |
+| `configDigest` | `sha256:d42142005ec62c45bede1f1fa92b715ec59450af11acb7da90dc3e5c923f7fe0` |
+| `binarySha256` (`/convex/convex-local-backend`) | `990c2132c693924fb8fcb0222c6244c3cabcf49d56d48bd05d68b69ed0f3a398` |
+| `patchSha256` (`a/ b/`) | `8d37a6040498768ae3b8a935acda2669ab07828645176ff3dd074defd9e6669b` |
+| `platform` / `builtAt` | `linux/amd64` / `2026-09-20T23:25:41.472781716-03:00` |
 
 Labels: os mesmos sete da primeira imagem C7, com
 `org.amage.patch-commit=a42537613…` e
@@ -823,7 +823,10 @@ Labels: os mesmos sete da primeira imagem C7, com
 ## O que mudou em `crates` (`80f0ae560` → `a42537613`)
 
 Quatro arquivos, todos em `crates/local_backend/src/`; sem alteração em
-`Cargo.toml`/`Cargo.lock`; `keybroker` intocado.
+`Cargo.toml`/`Cargo.lock`; `keybroker` intocado. Fora de `crates`, o patch
+hasheado inclui `self-hosted/docker-build/run_backend.sh`: `--port`/`--site-proxy-port`
+aceitam `PORT`/`SITE_PROXY_PORT` (necessário com `--network host`, o modo em que
+um backend containerizado alcança um supervisor no loopback do host).
 
 | Arquivo | Mudança |
 |---|---|
@@ -866,12 +869,12 @@ Mesmo `self-hosted/build-candidate7.sh` (lê `patchCommit`, `cliCommit` e
 ```bash
 git diff --binary --no-ext-diff --no-color --src-prefix=a/ --dst-prefix=b/ \
   --abbrev=9 849a6fc605b5a910c9834b61a77c5475cc24d189 \
-  2fe002eb08ffe1ae851838135197310427e5a120 \
+  d46388dc20978fb89935a11727a1d716cabacb70 \
   -- crates Cargo.toml Cargo.lock self-hosted/docker-build rust-toolchain .cargo \
   | sha256sum
 ```
 
-Resultado: `e04798b11797a689e0d467e35238cf8299e578da8e23836639f68786004c8ff5`
+Resultado: `8d37a6040498768ae3b8a935acda2669ab07828645176ff3dd074defd9e6669b`
 (label `org.amage.patch-sha256` e sufixo da versão).
 
 ## Estado
