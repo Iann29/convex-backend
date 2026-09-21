@@ -782,3 +782,102 @@ avaliação de desempenho. O uso real registrado é o E2E do laboratório
 `npx convex dev/deploy` com a CLI AMAGE 1.45.0; CLI upstream 1.44.0 recusada
 com `400 VerifiedDeployRequired`). Publicar, incluir no catálogo e medir são
 passos posteriores e não estão implícitos neste registro.
+
+# Candidata 7 — hardening (`amage.verified-deploy/2`)
+
+Segunda imagem da **mesma** C7 (a versão não mudou de nome: mesma linhagem,
+mesmo `variant`, novo patch), construída em 20/09/2026 de árvore limpa
+(`buildTreeDirty: []`, `headCommit 2fe002eb0`). Local, não publicada. O que
+mudou é o protocolo do gate: a receipt de instalação assinada pelo supervisor
+passa a ser a **credencial** de deploy — enviada no campo `adminKey` de
+`start_push`/`wait_for_schema`/`finish_push` como token
+`amage-receipt/2.<base64url>` — e o backend a transforma numa identidade admin
+restrita à operação upstream `Deploy` (`AdminIdentity.allowed_ops`), de modo
+que a admin key sai do fluxo `npx convex dev`/`deploy` e o coding principal
+não recebe nenhum poder administrativo sobre dados, env, logs, backups ou
+funções internas (recusa `OperationNotPermitted` do próprio upstream).
+Contrato normativo no laboratório: `docs/c7-hardening-contract.md`.
+
+## Identidade (de `amage-candidate7.json`, após o build)
+
+| Campo | Valor |
+|---|---|
+| base upstream / referência C6 | `849a6fc605b5a910c9834b61a77c5475cc24d189` / `41f472c767321302f71ea4419ff71e4bd5ec686d` |
+| commit do gate v2 (`patchCommit`) | `a425376130dcc30b99184862d4222103a28504b3` |
+| commit da CLI (`cliCommit`) | `9676ecb49213e70f37c0719dcec7f4372ef079d2` — fora de `patchPaths` |
+| commit do manifesto que apontou para o gate v2 | `2fe002eb08ffe1ae851838135197310427e5a120` (árvore construída) |
+| `protocol` | `amage.verified-deploy/2` |
+| `version` | `amage-20260920-candidate.7-verified-deploy+base.849a6fc605b5.patch.e04798b11797` |
+| `image` (tag local) | `amage-convex-backend:amage-20260920-candidate.7-verified-deploy-e04798b11797` |
+| `imageId` | `sha256:eb0f75c0c93efbe9727b7bede1a983a42bd328c6915fbc822155b9a9b8811761` |
+| `amd64ManifestDigest` | `sha256:823a645da867ceef1418f0aa5aafdcac65d18646ee86e837c39cd17bfe128aa9` |
+| `configDigest` | `sha256:c33418587cf7fe960ab7d174af1172c69c6710d87da138fe85ceb8f91cc32d55` |
+| `binarySha256` (`/convex/convex-local-backend`) | `77693de4aff9b87472b1c446f1b4cf55def25a002894d621b0bea76329ac5113` |
+| `patchSha256` (`a/ b/`) | `e04798b11797a689e0d467e35238cf8299e578da8e23836639f68786004c8ff5` |
+| `platform` / `builtAt` | `linux/amd64` / `2026-09-20T22:54:07.178632682-03:00` |
+
+Labels: os mesmos sete da primeira imagem C7, com
+`org.amage.patch-commit=a42537613…` e
+`org.amage.verified-deploy.protocol=amage.verified-deploy/2`.
+
+## O que mudou em `crates` (`80f0ae560` → `a42537613`)
+
+Quatro arquivos, todos em `crates/local_backend/src/`; sem alteração em
+`Cargo.toml`/`Cargo.lock`; `keybroker` intocado.
+
+| Arquivo | Mudança |
+|---|---|
+| `bendvex.rs` (reescrito, 3004 linhas, ~1420 de testes) | trust set `AMAGE_VERIFIED_DEPLOY_PUBKEY=<hex64>[@notAfter][,…]` (kid = SHA-256 da chave, retirada por data); tokens `install`/`observe`/`attestation` com conjuntos de campos fechados e verificação na ordem do contrato; `AmageReceiptAuth` (`AccessTokenAuth`) que sintetiza `AdminIdentity` com `allowed_ops=[Deploy]`; tabela de instalações por `installationId` (`starting/started/finishing/finished`, retry idempotente do start, finish no máximo uma vez por processo, 24 h de TTL, 1000 entradas); consulta online `POST <supervisor>/v1/installation_check` no `start` e no `finish` com atestação assinada e nonce (timeout 5 s, fail closed); linha de proveniência gravada como `message` do evento `push_config_with_components`; `GET /api/amage/installations[/{id}]` lendo memória e log de auditoria durável |
+| `deploy_config2.rs` | o gate corre **antes** de `must_be_admin_from_key` em `start_push`/`wait_for_schema`/`finish_push_internal`; a `message` do finish é substituída pela linha de proveniência em alvo protegido; `finished()` após o commit upstream |
+| `lib.rs` | `ApplicationAuth::new(key_broker, bendvex::access_token_auth(name), runtime)` — `AmageReceiptAuth` quando protegido, `NullAccessTokenAuth` caso contrário |
+| `router.rs` | rotas `GET /api/amage/installations` e `GET /api/amage/installations/{installation_id}` |
+
+Testes: `cargo test -p local_backend bendvex` 20/20 (vetor de ouro compartilhado
+com `tests/receipts.py` do laboratório, máquina de estados de instalação,
+rotação/retirada de chaves, checagem online sobre HTTP real, escopo da
+identidade da receipt), `cargo test -p keybroker verified_deploy` 3/3; clippy e
+rustfmt limpos.
+
+## Variáveis de ambiente e capability (v2)
+
+| Variável | Efeito |
+|---|---|
+| `AMAGE_VERIFIED_DEPLOY_PUBKEY` | lista `<hex64>[@YYYY-MM-DDTHH:MM:SSZ]` separada por vírgulas (um único hex = formato v1, ainda válido). Presente ⇒ modo protegido. Entrada com `@notAfter` é chave em retirada, aceita só enquanto `now < notAfter`. Duplicata, hex inválido, timestamp inválido ou mais de 8 chaves abortam o arranque |
+| `AMAGE_VERIFIED_DEPLOY_SUPERVISOR_URL` | **obrigatória** no modo protegido (o arranque falha sem ela: `AMAGE_VERIFIED_DEPLOY_SUPERVISOR_URL is required when AMAGE_VERIFIED_DEPLOY_PUBKEY is set`); origem http(s) consultada em `POST <url>/v1/installation_check` |
+
+`GET /api/amage/verified_deploy` →
+`{"protocol":"amage.verified-deploy/2","supported":true,"required":true,"target":{"instanceName":"…"},"verifierKeys":[{"kid":"…"},{"kid":"…","notAfter":"…"}],"supervisorUrl":"…"}`
+(`verifierKeyId` deixou de existir). Sem proteção: `required:false` e as rotas de
+instalação respondem 404.
+
+Em alvo protegido: admin key cifrada (ou nada) em `start_push` ⇒
+`400 VerifiedDeployRequired`; token inválido, digest do pedido diferente,
+forma recusada, instalação já terminada, autorização revogada/superada pelo
+supervisor ou supervisor inalcançável ⇒ `400 VerifiedDeployRejected` com a
+razão; token de instalação usado em qualquer rota administrativa ⇒
+`403 OperationNotPermitted` (só `Deploy`); credencial estranha na rota de
+instalações ⇒ `401 VerifiedDeployUnauthorized`.
+
+## Como construir e conferir
+
+Mesmo `self-hosted/build-candidate7.sh` (lê `patchCommit`, `cliCommit` e
+`protocol` do manifesto). Hash do patch reproduzível:
+
+```bash
+git diff --binary --no-ext-diff --no-color --src-prefix=a/ --dst-prefix=b/ \
+  --abbrev=9 849a6fc605b5a910c9834b61a77c5475cc24d189 \
+  2fe002eb08ffe1ae851838135197310427e5a120 \
+  -- crates Cargo.toml Cargo.lock self-hosted/docker-build rust-toolchain .cargo \
+  | sha256sum
+```
+
+Resultado: `e04798b11797a689e0d467e35238cf8299e578da8e23836639f68786004c8ff5`
+(label `org.amage.patch-sha256` e sufixo da versão).
+
+## Estado
+
+Imagem local, sem publicação, sem entrada no catálogo do Synapse. O uso real
+registrado é o do laboratório Bendvex (`tools/c7_e2e.py` e
+`tests/c7_bypass.py` contra esta tag). A primeira imagem C7
+(`…-cfbb0ffd9312`, protocolo v1) continua existindo apenas como histórico;
+CLIs v1 são recusadas por este backend com `VerifiedDeployRequired`.
