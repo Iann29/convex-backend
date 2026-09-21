@@ -468,17 +468,15 @@ async function handleManuallySetUrlAndAdminKey(
     convexUrl: url,
     siteUrl,
   });
-  if (
-    envFileConfig !== null &&
-    (envFileConfig.convexUrlEnvVar || envFileConfig.siteUrlEnvVar)
-  ) {
-    // Join both names with " and " if both exist, otherwise just use one of them.
-    const updatedVars = [
-      envFileConfig.convexUrlEnvVar,
-      siteUrl ? envFileConfig.siteUrlEnvVar : null,
-    ]
-      .filter(Boolean)
-      .join(" and ");
+  // Join both names with " and " if both exist, otherwise just use one of them;
+  // say nothing when nothing was written (e.g. no site URL without an admin key).
+  const updatedVars = [
+    envFileConfig?.convexUrlEnvVar,
+    siteUrl ? envFileConfig?.siteUrlEnvVar : null,
+  ]
+    .filter(Boolean)
+    .join(" and ");
+  if (envFileConfig !== null && updatedVars) {
     logMessage(
       chalkStderr.green(`Saved ${updatedVars} to ${envFileConfig.envFile}`),
     );
