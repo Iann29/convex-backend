@@ -16,6 +16,7 @@ import path from "path";
 import { LogManager, LogMode, watchLogs } from "./logs.js";
 import { PushOptions } from "./components.js";
 import {
+  CONVEX_SELF_HOSTED_ADMIN_KEY_VAR_NAME,
   formatDuration,
   getCurrentTimeString,
   waitForever,
@@ -65,6 +66,18 @@ export async function devAgainstDeployment(
   },
 ) {
   const logManager = new LogManager(devOptions.tailLogs);
+
+  // A protected deployment selected without an operator admin key
+  // (`adminKey: ""`): the push runs on the supervisor's receipt, but running
+  // a function or tailing logs still needs the admin key.
+  const noAdminKey = credentials.adminKey === "";
+  if (noAdminKey && devOptions.run?.kind === "function") {
+    return await ctx.crash({
+      exitCode: 1,
+      errorType: "fatal",
+      printedMessage: `--run needs the deployment admin key, which this protected deployment doesn't have in the environment. Set ${CONVEX_SELF_HOSTED_ADMIN_KEY_VAR_NAME} to run functions from \`npx convex dev\`.`,
+    });
+  }
 
   // Pre-flight check: Ensure AuthKit is provisioned before starting dev
   const { projectConfig } = await readProjectConfig(ctx);
@@ -125,12 +138,20 @@ export async function devAgainstDeployment(
 
   const promises = [];
   if (devOptions.tailLogs !== "disable") {
-    promises.push(
-      watchLogs(ctx, credentials.url, credentials.adminKey, "stderr", {
-        logManager,
-        success: false,
-      }),
-    );
+    if (noAdminKey) {
+      logMessage(
+        chalkStderr.gray(
+          `Function logs are not tailed: this protected deployment has no operator admin key in the environment (set ${CONVEX_SELF_HOSTED_ADMIN_KEY_VAR_NAME} to tail logs).`,
+        ),
+      );
+    } else {
+      promises.push(
+        watchLogs(ctx, credentials.url, credentials.adminKey, "stderr", {
+          logManager,
+          success: false,
+        }),
+      );
+    }
   }
 
   promises.push(
@@ -529,7 +550,9 @@ function getFunctionWatch(
   return {
     watch: async () => {
       const functionArgs = args.getArgs();
-      if (functionArgs === null) {
+      // System queries need an admin identity; without one the file watcher
+      // alone triggers the next push.
+      if (functionArgs === null || args.adminKey === "") {
         return waitForever();
       }
       let changes = 0;

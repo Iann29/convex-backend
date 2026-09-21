@@ -6,6 +6,7 @@ import path from "node:path";
 import zlib from "node:zlib";
 import { Crash, WatchContext } from "./watch.js";
 import { Span } from "./tracing.js";
+import { getDeploymentSelection } from "./deploymentSelection.js";
 import {
   collectCandidateFiles,
   fetchVerifiedDeployCapability,
@@ -27,7 +28,11 @@ type Fake = {
 
 // One in-process HTTP server; `respond` maps a request path to a JSON reply.
 async function fake(
-  respond: (path: string, body: any) => { status: number; body: any },
+  respond: (
+    path: string,
+    body: any,
+    headers: http.IncomingHttpHeaders,
+  ) => { status: number; body: any },
 ): Promise<Fake> {
   const requests: Recorded[] = [];
   const server = http.createServer((req, res) => {
@@ -46,7 +51,7 @@ async function fake(
       }
       const body = raw.length > 0 ? JSON.parse(raw.toString("utf8")) : null;
       requests.push({ path: req.url!, headers: req.headers, body });
-      const reply = respond(req.url!, body);
+      const reply = respond(req.url!, body, req.headers);
       res.writeHead(reply.status, { "Content-Type": "application/json" });
       res.end(JSON.stringify(reply.body));
     });
@@ -60,18 +65,26 @@ async function fake(
   };
 }
 
-const envelope = {
-  format: 1,
-  protocol: "amage.verified-deploy/1",
+const installationId = "0123456789abcdef0123456789abcdef";
+const receipt = {
+  format: 2,
+  protocol: "amage.verified-deploy/2",
+  kind: "install",
+  kid: "11".repeat(32),
   target: { instanceName: "inst", project: "ledger", deployment: "dev" },
-  requestSha256: "ab".repeat(32),
-  policy: { id: "c7", version: 3, sha256: "cd".repeat(32) },
+  installationId,
   candidateId: "cand-1",
+  requestSha256: "ab".repeat(32),
   receiptSha256: "ef".repeat(32),
+  policy: { id: "c7", version: 3, sha256: "cd".repeat(32) },
   issuedAt: "2026-09-20T18:00:00Z",
   expiresAt: "2026-09-20T18:15:00Z",
   signature: "c2lnbmF0dXJl",
 };
+// Opaque to the CLI: `amage-receipt/2.` + base64url(canonical receipt).
+const token =
+  "amage-receipt/2." +
+  Buffer.from(JSON.stringify(receipt)).toString("base64url");
 
 const artifactRequest = {
   dryRun: false,
@@ -105,14 +118,25 @@ const authorized = {
   candidateId: "cand-1",
   deployAllowed: true,
   rollout: "auto",
-  policy: envelope.policy,
+  policy: receipt.policy,
   invariants,
-  requestSha256: envelope.requestSha256,
-  receiptSha256: envelope.receiptSha256,
+  requestSha256: receipt.requestSha256,
+  receiptSha256: receipt.receiptSha256,
   request: artifactRequest,
-  amageVerified: envelope,
+  token,
+  receipt,
+  installationId,
   generated: { "ledger/model.js": "export default 1;\n" },
 };
+
+const recorded = (confirmation: string) => ({
+  format: 1,
+  status: "recorded",
+  outcome: "deployed",
+  candidateId: "cand-1",
+  state: "DEPLOYED",
+  confirmation,
+});
 
 const startPushResponse = {
   environmentVariables: {},
@@ -137,18 +161,31 @@ const finishPushDiff = {
   componentDiffs: {},
 };
 
-function protectedBackend(supervisorUrl: string) {
-  return fake((url) => {
+// `overrides` replaces the reply of a route (e.g. a lost finish_push answer).
+function protectedBackend(
+  supervisorUrl: string,
+  overrides: Record<
+    string,
+    (headers: http.IncomingHttpHeaders) => { status: number; body: any }
+  > = {},
+) {
+  return fake((url, _body, headers) => {
+    if (overrides[url]) {
+      return overrides[url](headers);
+    }
     switch (url) {
       case "/api/amage/verified_deploy":
         return {
           status: 200,
           body: {
-            protocol: "amage.verified-deploy/1",
+            protocol: "amage.verified-deploy/2",
             supported: true,
             required: true,
             target: { instanceName: "inst" },
-            verifierKeyId: "k",
+            verifierKeys: [
+              { kid: receipt.kid },
+              { kid: "22".repeat(32), notAfter: "2026-09-21T00:00:00Z" },
+            ],
             supervisorUrl,
           },
         };
@@ -162,6 +199,24 @@ function protectedBackend(supervisorUrl: string) {
         return { status: 404, body: { code: "NotFound", message: url } };
     }
   });
+}
+
+// Contract §9: the installation's state as the backend tells it.
+function installationRoute(state: "started" | "finished") {
+  return (headers: http.IncomingHttpHeaders) =>
+    headers.authorization === `Convex ${token}`
+      ? {
+          status: 200,
+          body: {
+            protocol: "amage.verified-deploy/2",
+            target: { instanceName: "inst" },
+            installation: { installationId, state },
+          },
+        }
+      : {
+          status: 401,
+          body: { code: "VerifiedDeployUnauthorized", message: "no" },
+        };
 }
 
 function makeProject(): { root: string; convexDir: string } {
@@ -223,7 +278,7 @@ async function crashOf(promise: Promise<unknown>): Promise<Crash> {
 }
 
 const requiredCapability: VerifiedDeployCapability = {
-  protocol: "amage.verified-deploy/1",
+  protocol: "amage.verified-deploy/2",
   required: true,
   legacyBackend: false,
 };
@@ -256,10 +311,22 @@ describe("verified deploys", () => {
     return s;
   }
 
-  async function backend(supervisorUrl: string) {
-    const b = await protectedBackend(supervisorUrl);
+  async function backend(
+    supervisorUrl: string,
+    overrides?: Parameters<typeof protectedBackend>[1],
+  ) {
+    const b = await protectedBackend(supervisorUrl, overrides);
     closers.push(b.close);
     return b;
+  }
+
+  function captureStderr(): string[] {
+    const stderr: string[] = [];
+    vi.spyOn(process.stderr, "write").mockImplementation((chunk: any) => {
+      stderr.push(String(chunk));
+      return true;
+    });
+    return stderr;
   }
 
   test("capability 404 means a legacy, unprotected backend", async () => {
@@ -270,33 +337,58 @@ describe("verified deploys", () => {
       adminKey: "admin",
     });
     expect(cap).toEqual({
-      protocol: "amage.verified-deploy/1",
+      protocol: "amage.verified-deploy/2",
       required: false,
       legacyBackend: true,
     });
   });
 
-  test("capability announces protection and the supervisor", async () => {
+  test("capability announces protection, the trust set and the supervisor", async () => {
     const b = await backend("http://supervisor.test");
     const cap = await fetchVerifiedDeployCapability(ctxFor(), {
       url: b.url,
-      adminKey: "admin",
+      adminKey: "",
     });
     expect(cap.required).toBe(true);
     expect(cap.legacyBackend).toBe(false);
     expect(cap.supervisorUrl).toBe("http://supervisor.test");
+    expect(cap.verifierKeys).toEqual([
+      { kid: receipt.kid },
+      { kid: "22".repeat(32), notAfter: "2026-09-21T00:00:00Z" },
+    ]);
   });
 
-  test("an unknown protocol on a protected backend is fatal", async () => {
+  test("a v1 (or unknown) protocol on a protected backend is fatal", async () => {
+    for (const protocol of [
+      "amage.verified-deploy/1",
+      "amage.verified-deploy/3",
+    ]) {
+      const b = await fake(() => ({
+        status: 200,
+        body: { protocol, required: true, verifierKeyId: "k" },
+      }));
+      closers.push(b.close);
+      const stderr = captureStderr();
+      const crash = await crashOf(
+        fetchVerifiedDeployCapability(ctxFor(), { url: b.url, adminKey: "" }),
+      );
+      expect(crash.errorType).toBe("fatal");
+      expect(stderr.join("")).toContain("Upgrade the CLI");
+      vi.restoreAllMocks();
+    }
+  });
+
+  test("a v1 protocol on an unprotected backend is not fatal", async () => {
     const b = await fake(() => ({
       status: 200,
-      body: { protocol: "amage.verified-deploy/2", required: true },
+      body: { protocol: "amage.verified-deploy/1", required: false },
     }));
     closers.push(b.close);
-    const crash = await crashOf(
-      fetchVerifiedDeployCapability(ctxFor(), { url: b.url, adminKey: "a" }),
-    );
-    expect(crash.errorType).toBe("fatal");
+    const cap = await fetchVerifiedDeployCapability(ctxFor(), {
+      url: b.url,
+      adminKey: "admin",
+    });
+    expect(cap.required).toBe(false);
   });
 
   test("collectCandidateFiles reads .bend/.ts/.js/.json through ctx.fs", async () => {
@@ -340,19 +432,20 @@ describe("verified deploys", () => {
     expect(b.requests).toHaveLength(0);
   });
 
-  test("a passing build forwards the artifact and envelope unchanged", async () => {
+  test("a passing build pushes the artifact with the token, never the admin key", async () => {
     const s = await supervisor((op) => {
       switch (op) {
         case "build":
           return { status: 200, body: authorized };
         case "report":
-          return { status: 200, body: { format: 1, status: "recorded" } };
+          return { status: 200, body: recorded("backend-confirmed") };
         default:
           return { status: 400, body: { error: op } };
       }
     });
     const b = await backend(s.url);
     const stdout = vi.spyOn(console, "log").mockImplementation(() => {});
+    const stderr = captureStderr();
     const ctx = ctxFor();
     const result = await runVerifiedPush(
       ctx,
@@ -370,20 +463,23 @@ describe("verified deploys", () => {
     expect(Object.keys(build.body)).toEqual(["files"]);
     expect(Object.keys(build.body.files)).toContain("ledger/model.bend");
 
-    const paths = b.requests.map((r) => r.path);
-    expect(paths).toEqual([
+    expect(b.requests.map((r) => r.path)).toEqual([
       "/api/deploy2/start_push",
       "/api/deploy2/wait_for_schema",
       "/api/deploy2/finish_push",
     ]);
-    const startPush = b.requests[0].body;
-    expect(startPush.amageVerified).toEqual(envelope);
-    expect(startPush.adminKey).toBe("admin");
-    const { adminKey: _adminKey, amageVerified: _env, ...rest } = startPush;
+    // The receipt token is the install credential on every deploy call, in
+    // the body and in the header; the operator admin key ("admin") never is.
+    for (const request of b.requests) {
+      expect(request.body.adminKey).toBe(token);
+      expect(request.headers.authorization).toBe(`Convex ${token}`);
+      expect(JSON.stringify(request)).not.toContain('"admin"');
+    }
+    const { adminKey: _adminKey, ...rest } = b.requests[0].body;
     expect(rest).toEqual(artifactRequest);
-    expect(b.requests[2].body.message).toBe(
-      `amage-verified candidate=cand-1 policy=c7@3 receipt=${envelope.receiptSha256} release 4`,
-    );
+    expect("amageVerified" in b.requests[0].body).toBe(false);
+    // The user's message passes through; the backend writes provenance itself.
+    expect(b.requests[2].body.message).toBe("release 4");
 
     expect(
       fs.readFileSync(path.join(project.convexDir, "ledger/model.js"), "utf8"),
@@ -391,10 +487,21 @@ describe("verified deploys", () => {
     expect(ctx.fs.finalize()).not.toBe("invalidated");
 
     expect(s.requests[1].path).toBe("/v1/report");
-    expect(s.requests[1].body).toMatchObject({
+    expect(s.requests[1].body).toEqual({
       candidateId: "cand-1",
+      installationId,
       outcome: "deployed",
+      detail: `finish_push accepted by ${b.url}`,
     });
+
+    const output = stderr.join("");
+    expect(output).toContain("Verification (c7@3)");
+    expect(output).toContain(
+      `Artifact ${receipt.requestSha256.slice(0, 12)}… authorized by deployment authority (auto); installation ${installationId.slice(0, 12)}`,
+    );
+    expect(output).toContain(
+      `Installation ${installationId.slice(0, 12)} confirmed by the backend`,
+    );
 
     const events = stdout.mock.calls.map((call) => JSON.parse(call[0]));
     expect(events).toHaveLength(1);
@@ -402,12 +509,200 @@ describe("verified deploys", () => {
       event: "verification",
       status: "passed",
       candidateId: "cand-1",
-      policy: envelope.policy,
-      requestSha256: envelope.requestSha256,
-      receiptSha256: envelope.receiptSha256,
+      policy: receipt.policy,
+      requestSha256: receipt.requestSha256,
+      receiptSha256: receipt.receiptSha256,
+      installationId,
+      confirmation: "backend-confirmed",
       deploy: { status: "deployed" },
     });
     expect(events[0].invariants).toEqual(invariants);
+  });
+
+  test("an authorization without the token is a supervisor bug, not a push", async () => {
+    const { token: _token, ...noToken } = authorized;
+    const s = await supervisor(() => ({ status: 200, body: noToken }));
+    const b = await backend(s.url);
+    const crash = await crashOf(
+      runVerifiedPush(
+        ctxFor(),
+        Span.noop(),
+        rootComponentFor(project.convexDir),
+        new Map(),
+        optionsFor(b.url),
+        { ...requiredCapability, supervisorUrl: s.url },
+      ),
+    );
+    expect(crash.errorType).toBe("fatal");
+    expect(b.requests).toHaveLength(0);
+  });
+
+  test("pending confirmation from the supervisor is not an error", async () => {
+    const s = await supervisor((op) => ({
+      status: 200,
+      body: op === "build" ? authorized : recorded("pending_confirmation"),
+    }));
+    const b = await backend(s.url);
+    const stdout = vi.spyOn(console, "log").mockImplementation(() => {});
+    const stderr = captureStderr();
+    const result = await runVerifiedPush(
+      ctxFor(),
+      Span.noop(),
+      rootComponentFor(project.convexDir),
+      new Map(),
+      { ...optionsFor(b.url), verifiedJson: true },
+      { ...requiredCapability, supervisorUrl: s.url },
+    );
+    expect(result.finishPushResponse).toEqual(finishPushDiff);
+    expect(stderr.join("")).toContain(
+      "supervisor could not yet confirm it with the backend",
+    );
+    expect(JSON.parse(stdout.mock.calls[0][0])).toMatchObject({
+      status: "passed",
+      installationId,
+      confirmation: "pending_confirmation",
+      deploy: { status: "deployed" },
+    });
+  });
+
+  test("a lost finish_push answer is reconciled from the backend", async () => {
+    // A 502 stands in for the lost answer (a plain connection error takes the
+    // push retry backoff, a minute, before it surfaces).
+    const s = await supervisor((op) => ({
+      status: 200,
+      body: op === "build" ? authorized : recorded("backend-confirmed"),
+    }));
+    const b = await backend(s.url, {
+      "/api/deploy2/finish_push": () => ({
+        status: 502,
+        body: { code: "BadGateway", message: "upstream timed out" },
+      }),
+      [`/api/amage/installations/${installationId}`]:
+        installationRoute("finished"),
+    });
+    const stderr = captureStderr();
+    const result = await runVerifiedPush(
+      ctxFor(),
+      Span.noop(),
+      rootComponentFor(project.convexDir),
+      new Map(),
+      optionsFor(b.url),
+      { ...requiredCapability, supervisorUrl: s.url },
+    );
+    expect(result.finishPushResponse).toEqual({
+      authDiff: { added: [], removed: [] },
+      definitionDiffs: {},
+      componentDiffs: {},
+    });
+    expect(b.requests.map((r) => r.path)).toEqual([
+      "/api/deploy2/start_push",
+      "/api/deploy2/wait_for_schema",
+      "/api/deploy2/finish_push",
+      `/api/amage/installations/${installationId}`,
+    ]);
+    expect(b.requests[3].headers.authorization).toBe(`Convex ${token}`);
+    expect(stderr.join("")).toContain("reconciled from the backend");
+    expect(s.requests[1].body).toMatchObject({
+      installationId,
+      outcome: "deployed",
+    });
+  });
+
+  test("a backend that says 'already finished' on finish_push is reconciled too", async () => {
+    const s = await supervisor((op) => ({
+      status: 200,
+      body: op === "build" ? authorized : recorded("backend-confirmed"),
+    }));
+    const b = await backend(s.url, {
+      "/api/deploy2/finish_push": () => ({
+        status: 400,
+        body: {
+          code: "VerifiedDeployRejected",
+          message: `no started installation ${installationId} on this backend; run start_push again`,
+        },
+      }),
+      [`/api/amage/installations/${installationId}`]:
+        installationRoute("finished"),
+    });
+    await runVerifiedPush(
+      ctxFor(),
+      Span.noop(),
+      rootComponentFor(project.convexDir),
+      new Map(),
+      optionsFor(b.url),
+      { ...requiredCapability, supervisorUrl: s.url },
+    );
+    expect(b.requests.map((r) => r.path)).toContain(
+      `/api/amage/installations/${installationId}`,
+    );
+    expect(s.requests[1].body).toMatchObject({ outcome: "deployed" });
+  });
+
+  test("a lost finish_push answer with the installation still started fails as before", async () => {
+    const s = await supervisor((op) => ({
+      status: 200,
+      body: op === "build" ? authorized : recorded("pending_confirmation"),
+    }));
+    const b = await backend(s.url, {
+      "/api/deploy2/finish_push": () => ({
+        status: 502,
+        body: { code: "BadGateway", message: "upstream timed out" },
+      }),
+      [`/api/amage/installations/${installationId}`]:
+        installationRoute("started"),
+    });
+    captureStderr();
+    const crash = await crashOf(
+      runVerifiedPush(
+        ctxFor(),
+        Span.noop(),
+        rootComponentFor(project.convexDir),
+        new Map(),
+        optionsFor(b.url),
+        { ...requiredCapability, supervisorUrl: s.url },
+      ),
+    );
+    expect(crash.errorType).toBe("transient");
+    expect(b.requests.map((r) => r.path)).toEqual([
+      "/api/deploy2/start_push",
+      "/api/deploy2/wait_for_schema",
+      "/api/deploy2/finish_push",
+      `/api/amage/installations/${installationId}`,
+    ]);
+    expect(s.requests[1].body).toMatchObject({
+      installationId,
+      outcome: "failed",
+    });
+  });
+
+  test("a genuine finish_push rejection is not reconciled", async () => {
+    const s = await supervisor((op) => ({
+      status: 200,
+      body: op === "build" ? authorized : recorded("pending_confirmation"),
+    }));
+    const b = await backend(s.url, {
+      "/api/deploy2/finish_push": () => ({
+        status: 400,
+        body: { code: "InvalidModules", message: "bad module" },
+      }),
+      [`/api/amage/installations/${installationId}`]:
+        installationRoute("finished"),
+    });
+    captureStderr();
+    const crash = await crashOf(
+      runVerifiedPush(
+        ctxFor(),
+        Span.noop(),
+        rootComponentFor(project.convexDir),
+        new Map(),
+        optionsFor(b.url),
+        { ...requiredCapability, supervisorUrl: s.url },
+      ),
+    );
+    expect(crash.errorType).toBe("invalid filesystem or env vars");
+    expect(b.requests.map((r) => r.path)).not.toContain(
+      `/api/amage/installations/${installationId}`,
+    );
   });
 
   test("a failing build sends nothing to the backend", async () => {
@@ -418,7 +713,7 @@ describe("verified deploys", () => {
         status: "rejected",
         candidateId: "cand-9",
         deployAllowed: false,
-        policy: envelope.policy,
+        policy: receipt.policy,
         invariants: [
           { id: "idempotency", version: 1, status: "accepted" },
           {
@@ -434,11 +729,7 @@ describe("verified deploys", () => {
       },
     }));
     const b = await backend(s.url);
-    const stderr: string[] = [];
-    vi.spyOn(process.stderr, "write").mockImplementation((chunk: any) => {
-      stderr.push(String(chunk));
-      return true;
-    });
+    const stderr = captureStderr();
     const crash = await crashOf(
       runVerifiedPush(
         ctxFor(),
@@ -494,11 +785,7 @@ describe("verified deploys", () => {
       },
     }));
     const b = await backend(s.url);
-    const stderr: string[] = [];
-    vi.spyOn(process.stderr, "write").mockImplementation((chunk: any) => {
-      stderr.push(String(chunk));
-      return true;
-    });
+    const stderr = captureStderr();
     const stdout = vi.spyOn(console, "log").mockImplementation(() => {});
     const crash = await crashOf(
       runVerifiedPush(
@@ -529,11 +816,7 @@ describe("verified deploys", () => {
     await new Promise<void>((resolve) => closed.close(() => resolve()));
     process.env.AMAGE_SUPERVISOR_URL = closed.url;
     const b = await backend(closed.url);
-    const stderr: string[] = [];
-    vi.spyOn(process.stderr, "write").mockImplementation((chunk: any) => {
-      stderr.push(String(chunk));
-      return true;
-    });
+    const stderr = captureStderr();
     const crash = await crashOf(
       runVerifiedPush(
         ctxFor(),
@@ -596,7 +879,7 @@ describe("verified deploys", () => {
       candidateId: "cand-1",
       deployAllowed: false,
       rollout: "manual",
-      policy: envelope.policy,
+      policy: receipt.policy,
       invariants,
     };
     const s = await supervisor((op) => {
@@ -625,7 +908,8 @@ describe("verified deploys", () => {
     ]);
     expect(s.requests[1].body).toEqual({ candidateId: "cand-1" });
     expect(b.requests[0].path).toBe("/api/deploy2/start_push");
-    expect(b.requests[0].body.amageVerified).toEqual(envelope);
+    expect(b.requests[0].body.adminKey).toBe(token);
+    expect(s.requests[2].body).toMatchObject({ installationId });
   }, 10_000);
 
   test("--verified-wait 0 exits without waiting", async () => {
@@ -676,5 +960,50 @@ describe("verified deploys", () => {
     expect(
       fs.readFileSync(path.join(project.convexDir, "schema.ts"), "utf8"),
     ).toBe("export default {};\n");
+  });
+
+  describe("deployment selection", () => {
+    beforeEach(() => {
+      for (const name of [
+        "CONVEX_DEPLOYMENT",
+        "CONVEX_DEPLOY_KEY",
+        "CONVEX_DEPLOYMENT_TOKEN",
+        "CONVEX_SELF_HOSTED_ADMIN_KEY",
+      ]) {
+        delete process.env[name];
+      }
+      process.env.CONVEX_SELF_HOSTED_URL = "http://backend.test:3210";
+    });
+
+    test("url + coding credential without an admin key selects the deployment", async () => {
+      const selection = await getDeploymentSelection(ctxFor(), {});
+      expect(selection).toEqual({
+        kind: "existingDeployment",
+        deploymentToActOn: {
+          url: "http://backend.test:3210",
+          adminKey: "",
+          deploymentFields: null,
+          source: "selfHosted",
+        },
+      });
+    });
+
+    test("an admin key next to the credential is kept for the admin commands", async () => {
+      process.env.CONVEX_SELF_HOSTED_ADMIN_KEY = "inst|key";
+      const selection = await getDeploymentSelection(ctxFor(), {});
+      expect(selection).toMatchObject({
+        deploymentToActOn: { adminKey: "inst|key", source: "selfHosted" },
+      });
+    });
+
+    test("CONVEX_DEPLOYMENT still conflicts with the self-hosted selection", async () => {
+      process.env.CONVEX_DEPLOYMENT = "dev:happy-otter-123";
+      const stderr = captureStderr();
+      const crash = await crashOf(getDeploymentSelection(ctxFor(), {}));
+      expect(crash.errorType).toBe("invalid filesystem or env vars");
+      expect(stderr.join("")).toContain(
+        "CONVEX_DEPLOYMENT must not be set when CONVEX_SELF_HOSTED_URL and AMAGE_CODING_CREDENTIAL are set",
+      );
+    });
   });
 });

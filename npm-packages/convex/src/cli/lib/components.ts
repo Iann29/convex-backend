@@ -342,7 +342,7 @@ async function startComponentsPushAndCodegen(
     );
   }
 
-  // A protected deployment (amage.verified-deploy/1) only installs code the
+  // A protected deployment (amage.verified-deploy/2) only installs code the
   // supervisor verified: the local bundle below is replaced by its artifact.
   const capability = await parentSpan.enterAsync(
     "fetchVerifiedDeployCapability",

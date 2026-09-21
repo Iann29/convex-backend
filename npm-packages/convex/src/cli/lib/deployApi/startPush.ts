@@ -11,27 +11,6 @@ import { authInfo } from "./types.js";
 import { looseObject } from "./utils.js";
 import { indexDiff } from "./finishPush.js";
 
-// The verifier's signed receipt for a protected deployment (`amage.verified-deploy/1`).
-// Issued by the supervisor, carried by the CLI as-is, and checked by the backend
-// against the rest of the request; the CLI never produces or edits one.
-export const amageVerifiedEnvelope = looseObject({
-  format: z.literal(1),
-  protocol: z.string(),
-  target: looseObject({ instanceName: z.string() }),
-  requestSha256: z.string(),
-  policy: looseObject({
-    id: z.string(),
-    version: z.number(),
-    sha256: z.string(),
-  }),
-  candidateId: z.string(),
-  receiptSha256: z.string(),
-  issuedAt: z.string(),
-  expiresAt: z.string(),
-  signature: z.string(),
-});
-export type AmageVerifiedEnvelope = z.infer<typeof amageVerifiedEnvelope>;
-
 export const startPushRequest = looseObject({
   adminKey: z.string(),
   dryRun: z.boolean(),
@@ -44,9 +23,6 @@ export const startPushRequest = looseObject({
   nodeDependencies: z.array(nodeDependency),
 
   nodeVersion: z.optional(z.string()),
-
-  // Only present on pushes to protected deployments.
-  amageVerified: z.optional(amageVerifiedEnvelope),
 });
 export type StartPushRequest = z.infer<typeof startPushRequest>;
 

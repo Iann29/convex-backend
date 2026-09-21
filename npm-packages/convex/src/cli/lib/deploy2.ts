@@ -9,6 +9,7 @@ import {
 } from "../../bundler/log.js";
 import { spawnSync } from "child_process";
 import {
+  CONVEX_SELF_HOSTED_ADMIN_KEY_VAR_NAME,
   deploymentFetch,
   logAndHandleFetchError,
   typedDeploymentClient,
@@ -359,6 +360,9 @@ export async function finishPush(
     deploymentType?: DeploymentType;
     message: string | null;
   },
+  // When set, a failed finish throws the raw error instead of crashing the
+  // process, so the caller can reconcile against the backend first.
+  bestEffort?: boolean,
 ): Promise<FinishPushDiff> {
   changeSpinner("Finalizing push...");
   const fetch = deploymentFetch(ctx, {
@@ -383,6 +387,10 @@ export async function finishPush(
     });
     return finishPushDiff.parse(await response.json());
   } catch (error: unknown) {
+    if (bestEffort) {
+      // eslint-disable-next-line no-restricted-syntax
+      throw error;
+    }
     return await handlePushConfigError(
       ctx,
       error,
@@ -540,6 +548,16 @@ export async function runCommand(
   const suggestedEnvVars = await suggestedEnvVarNames(ctx);
   const urlVar = options.cmdUrlEnvVarName ?? suggestedEnvVars.convexUrlEnvVar;
   const siteVar = suggestedEnvVars.convexSiteEnvVar;
+  if (options.adminKey === "") {
+    // A protected deployment selected without an operator admin key: the
+    // canonical URLs are behind admin auth and the supervisor's receipt
+    // doesn't exist yet at this point of the deploy.
+    return await ctx.crash({
+      exitCode: 1,
+      errorType: "fatal",
+      printedMessage: `--cmd needs the deployment's canonical URLs, which this protected deployment only gives to an admin key. Set ${CONVEX_SELF_HOSTED_ADMIN_KEY_VAR_NAME}, or run '${options.cmd}' yourself with ${urlVar} and ${siteVar} set.`,
+    });
+  }
   showSpinner(
     `Running '${options.cmd}' with environment variables "${urlVar}" and "${siteVar}" set...${
       options.dryRun ? " [dry run]" : ""

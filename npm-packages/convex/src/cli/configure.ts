@@ -122,10 +122,18 @@ export async function deploymentCredentialsOrConfigure(
     chosenConfiguration,
     cmdOptions,
   );
-  const { convexSiteUrl: siteUrl } = await fetchDeploymentCanonicalUrls(ctx, {
-    adminKey: selectedDeployment.adminKey,
-    deploymentUrl: selectedDeployment.url,
-  });
+  // The canonical URLs sit behind admin auth; a protected deployment selected
+  // without an admin key (`adminKey: ""`) can't read them, so its site URL is
+  // left alone.
+  const siteUrl =
+    selectedDeployment.adminKey === ""
+      ? null
+      : (
+          await fetchDeploymentCanonicalUrls(ctx, {
+            adminKey: selectedDeployment.adminKey,
+            deploymentUrl: selectedDeployment.url,
+          })
+        ).convexSiteUrl;
 
   if (selectedDeployment.deploymentFields !== null) {
     // Set the `CONVEX_DEPLOYMENT` env var + the `CONVEX_URL` env var
@@ -445,7 +453,7 @@ async function handleChooseProject(
 
 async function handleManuallySetUrlAndAdminKey(
   ctx: Context,
-  cmdOptions: { url: string; siteUrl: string; adminKey: string },
+  cmdOptions: { url: string; siteUrl: string | null; adminKey: string },
 ) {
   const { url, siteUrl, adminKey } = cmdOptions;
   const didErase = await eraseDeploymentEnvVar(ctx);
@@ -467,7 +475,7 @@ async function handleManuallySetUrlAndAdminKey(
     // Join both names with " and " if both exist, otherwise just use one of them.
     const updatedVars = [
       envFileConfig.convexUrlEnvVar,
-      envFileConfig.siteUrlEnvVar,
+      siteUrl ? envFileConfig.siteUrlEnvVar : null,
     ]
       .filter(Boolean)
       .join(" and ");

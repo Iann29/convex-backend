@@ -45,6 +45,9 @@ export const CONVEX_DEPLOYMENT_ENV_VAR_NAME = "CONVEX_DEPLOYMENT";
 export const CONVEX_SELF_HOSTED_URL_VAR_NAME = "CONVEX_SELF_HOSTED_URL";
 export const CONVEX_SELF_HOSTED_ADMIN_KEY_VAR_NAME =
   "CONVEX_SELF_HOSTED_ADMIN_KEY";
+// Protected deployments (`amage.verified-deploy/2`, see verifiedDeploy.ts).
+export const SUPERVISOR_URL_ENV_VAR_NAME = "AMAGE_SUPERVISOR_URL";
+export const CODING_CREDENTIAL_ENV_VAR_NAME = "AMAGE_CODING_CREDENTIAL";
 const MAX_RETRIES = 6;
 // After 3 retries, log a progress message that we're retrying the request
 const RETRY_LOG_THRESHOLD = 3;

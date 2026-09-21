@@ -17,41 +17,39 @@ import {
 import { DeploymentType } from "./api.js";
 import { doFinalComponentCodegen } from "./codegen.js";
 import { ComponentDirectory } from "./components/definition/directoryStructure.js";
+import { handlePushConfigError } from "./config.js";
 import { finishPush, startPush, waitForSchema } from "./deploy2.js";
 import { FinishPushDiff } from "./deployApi/finishPush.js";
-import {
-  amageVerifiedEnvelope,
-  startPushRequest,
-  StartPushResponse,
-} from "./deployApi/startPush.js";
+import { startPushRequest, StartPushResponse } from "./deployApi/startPush.js";
 import { looseObject } from "./deployApi/utils.js";
 import { Span } from "./tracing.js";
 import { TypeCheckMode, typeCheckFunctionsInMode } from "./typecheck.js";
 import {
+  CODING_CREDENTIAL_ENV_VAR_NAME,
   deploymentFetch,
   logAndHandleFetchError,
+  SUPERVISOR_URL_ENV_VAR_NAME,
   ThrowingFetchError,
 } from "./utils/utils.js";
 
-// Protected deployments (`amage.verified-deploy/1`) only install code that the
+// Protected deployments (`amage.verified-deploy/2`) only install code that the
 // supervisor verified and signed. The CLI's part is transport and UX: it asks
 // the backend whether it is protected, sends the candidate sources to the
-// supervisor, forwards the returned artifact and receipt untouched, and never
-// signs, approves, or bypasses anything.
+// supervisor, forwards the returned artifact untouched with the supervisor's
+// receipt token in place of the admin key, and never signs, approves, or
+// bypasses anything.
 
-export const VERIFIED_DEPLOY_PROTOCOL = "amage.verified-deploy/1";
-export const SUPERVISOR_URL_ENV_VAR_NAME = "AMAGE_SUPERVISOR_URL";
-export const CODING_CREDENTIAL_ENV_VAR_NAME = "AMAGE_CODING_CREDENTIAL";
+export const VERIFIED_DEPLOY_PROTOCOL = "amage.verified-deploy/2";
 export const DEFAULT_VERIFIED_WAIT_SECONDS = 600;
 
 const CAPABILITY_PATH = "/api/amage/verified_deploy";
+// Authoritative installation state (contract §9), read with the token.
+const INSTALLATIONS_PATH = "/api/amage/installations";
 const CANDIDATE_FILE_EXTENSIONS = [".bend", ".ts", ".js", ".json"];
 const CANDIDATE_SKIPPED_DIRECTORIES = new Set(["_generated", "node_modules"]);
 const CANDIDATE_MAX_BYTES = 2 * 1024 * 1024;
 // The supervisor only ever hands back `<member>/model.js`.
 const GENERATED_FILE_PATTERN = /^[A-Za-z0-9_-]+\/model\.js$/;
-// `PushMessage::MAX_LENGTH` in crates/model/src/deployment_audit_log/types.rs.
-const PUSH_MESSAGE_MAX_BYTES = 1024;
 const AUTHORITY_POLL_MS = 2_000;
 const BUILD_TIMEOUT_MS = 10 * 60_000;
 const SUPERVISOR_TIMEOUT_MS = 30_000;
@@ -60,6 +58,10 @@ const capability = looseObject({
   protocol: z.string(),
   required: z.boolean(),
   supervisorUrl: z.string().optional(),
+  // The backend's trust set; informative for the CLI (the backend checks).
+  verifierKeys: z
+    .array(looseObject({ kid: z.string(), notAfter: z.string().optional() }))
+    .optional(),
 });
 export type VerifiedDeployCapability = z.infer<typeof capability> & {
   legacyBackend: boolean;
@@ -70,6 +72,21 @@ const invariantResult = looseObject({
   version: z.number(),
   status: z.string(),
   diagnostic: z.unknown().optional(),
+});
+
+// The install receipt (contract §3.1), as the supervisor returns it next to
+// its token. The CLI only reads it for provenance; the token is what it sends.
+const receipt = looseObject({
+  installationId: z.string(),
+  candidateId: z.string(),
+  requestSha256: z.string(),
+  receiptSha256: z.string(),
+  policy: looseObject({
+    id: z.string(),
+    version: z.number(),
+    sha256: z.string(),
+  }),
+  kid: z.string().optional(),
 });
 
 // What `/v1/build` and `/v1/candidate` answer. `status` and `deployAllowed`
@@ -91,10 +108,23 @@ const decision = looseObject({
   requestSha256: z.string().optional(),
   receiptSha256: z.string().optional(),
   request: z.record(z.string(), z.unknown()).optional(),
-  amageVerified: amageVerifiedEnvelope.optional(),
+  token: z.string().optional(),
+  receipt: receipt.optional(),
+  installationId: z.string().optional(),
   generated: z.record(z.string(), z.string()).optional(),
 });
 type Decision = z.infer<typeof decision>;
+
+const installationStatus = looseObject({
+  installation: looseObject({ state: z.string() }),
+});
+
+// What `/v1/report` answers; the supervisor only marks a candidate deployed
+// after reading the backend, so "pending" is a state, not an error.
+const reportResult = looseObject({
+  confirmation: z.string().nullish(),
+});
+const CONFIRMED = new Set(["backend-confirmed", "backend-observed"]);
 
 type VerificationEvent = {
   status: "passed" | "failed" | "blocked" | "unavailable";
@@ -103,6 +133,8 @@ type VerificationEvent = {
   invariants?: Decision["invariants"];
   requestSha256?: string | undefined;
   receiptSha256?: string | undefined;
+  installationId?: string | undefined;
+  confirmation?: string | undefined;
   deploy: { status: "deployed" | "skipped" | "failed"; detail: string };
 };
 
@@ -171,7 +203,7 @@ export async function fetchVerifiedDeployCapability(
     return await ctx.crash({
       exitCode: 1,
       errorType: "fatal",
-      printedMessage: `${options.url} requires verified deploys with protocol "${parsed.data.protocol}", but this CLI only speaks "${VERIFIED_DEPLOY_PROTOCOL}". Upgrade the CLI.`,
+      printedMessage: `${options.url} requires verified deploys with protocol "${parsed.data.protocol}", but this CLI speaks "${VERIFIED_DEPLOY_PROTOCOL}". Upgrade the CLI, or upgrade the backend if it is the older of the two.`,
     });
   }
   return { ...parsed.data, legacyBackend: false };
@@ -349,28 +381,53 @@ function logVerificationFailure(d: Decision) {
 }
 
 function provenance(d: Decision) {
-  const envelope = d.amageVerified;
+  const r = d.receipt;
   return {
-    candidateId: envelope?.candidateId ?? d.candidateId,
-    policy: envelope?.policy ?? d.policy,
+    candidateId: r?.candidateId ?? d.candidateId,
+    policy: r?.policy ?? d.policy,
     invariants: d.invariants,
-    requestSha256: envelope?.requestSha256 ?? d.requestSha256,
-    receiptSha256: envelope?.receiptSha256 ?? d.receiptSha256,
+    requestSha256: r?.requestSha256 ?? d.requestSha256,
+    receiptSha256: r?.receiptSha256 ?? d.receiptSha256,
+    installationId: r?.installationId ?? d.installationId,
   };
 }
 
-function pushMessage(
-  envelope: z.infer<typeof amageVerifiedEnvelope>,
-  userMessage: string | null | undefined,
-): string {
-  let message = `amage-verified candidate=${envelope.candidateId} policy=${envelope.policy.id}@${envelope.policy.version} receipt=${envelope.receiptSha256}`;
-  if (userMessage) {
-    message += ` ${userMessage}`;
+// Contract §9: after a lost `finish_push` answer the backend's installation
+// state is the truth. `finished` means the push landed.
+async function installationFinished(
+  ctx: Context,
+  url: string,
+  token: string,
+  installationId: string,
+): Promise<boolean> {
+  const fetch = deploymentFetch(ctx, {
+    deploymentUrl: url,
+    adminKey: token,
+    shouldRetry: (error, response) =>
+      error !== null || (response !== null && response.status >= 500),
+  });
+  try {
+    const response = await fetch(`${INSTALLATIONS_PATH}/${installationId}`, {
+      method: "GET",
+    });
+    const parsed = installationStatus.safeParse(await response.json());
+    return parsed.success && parsed.data.installation.state === "finished";
+  } catch (error: unknown) {
+    logVerbose(
+      `Could not read installation ${installationId}: ${String(error)}`,
+    );
+    return false;
   }
-  while (Buffer.byteLength(message, "utf8") > PUSH_MESSAGE_MAX_BYTES) {
-    message = message.slice(0, -1);
-  }
-  return message;
+}
+
+// Worth asking the backend: the answer never arrived, or the backend rejected
+// the finish for a reason its status route settles (already finished).
+function reconcilable(error: unknown): boolean {
+  return (
+    !(error instanceof ThrowingFetchError) ||
+    error.response.status >= 500 ||
+    error.serverErrorData?.code === "VerifiedDeployRejected"
+  );
 }
 
 async function writeGeneratedFiles(
@@ -514,11 +571,12 @@ export async function runVerifiedPush(
     current.status === "authorized" &&
     current.deployAllowed === true &&
     current.request !== undefined &&
-    current.amageVerified !== undefined;
+    current.token !== undefined &&
+    current.installationId !== undefined;
   if (!authorized) {
     if (current.status === "authorized") {
       // Authorized but unusable: a supervisor bug, not something to retry.
-      const message = `Verifier at ${supervisor.url} authorized candidate ${current.candidateId ?? "?"} without ${current.deployAllowed === true ? "the artifact (request, amageVerified)" : "deployAllowed"}; nothing was deployed.`;
+      const message = `Verifier at ${supervisor.url} authorized candidate ${current.candidateId ?? "?"} without ${current.deployAllowed === true ? "the artifact (request, token, installationId)" : "deployAllowed"}; nothing was deployed.`;
       emit({
         status: "blocked",
         ...provenance(current),
@@ -548,17 +606,19 @@ export async function runVerifiedPush(
       printedMessage: null,
     });
   }
-  const envelope = current.amageVerified!;
-  const candidateId = envelope.candidateId;
+  const token = current.token!;
+  const installationId = current.installationId!;
+  const known = provenance(current);
+  const candidateId = known.candidateId ?? "?";
 
   const checks = (current.invariants ?? [])
     .map((i) => `${i.id}@${i.version} ${chalkStderr.green("✓")}`)
     .join("  ");
   logFinishedStep(
-    `Verification (${formatPolicy(envelope.policy)})${checks ? `: ${checks}` : " passed"}`,
+    `Verification (${formatPolicy(known.policy)})${checks ? `: ${checks}` : " passed"}`,
   );
   logFinishedStep(
-    `Artifact ${envelope.requestSha256.slice(0, 12)}… authorized by deployment authority (${rollout})`,
+    `Artifact ${(known.requestSha256 ?? "").slice(0, 12)}… authorized by deployment authority (${rollout}); installation ${installationId.slice(0, 12)}`,
   );
   await writeGeneratedFiles(
     ctx,
@@ -567,34 +627,44 @@ export async function runVerifiedPush(
     files,
   );
 
-  // Everything the supervisor returned goes to the backend as is; only the
-  // admin key is added. The backend canonicalizes before hashing, so key
-  // order is irrelevant.
+  // Everything the supervisor returned goes to the backend as is, with the
+  // receipt token where the admin key would go: it is the install credential,
+  // and the operator's admin key (if any) never touches the push. Any other
+  // root field would change the request digest the receipt signs.
   const request = startPushRequest.parse({
     ...current.request,
-    adminKey: options.adminKey,
-    amageVerified: envelope,
+    adminKey: token,
   });
-  const report = async (outcome: "deployed" | "failed", detail: string) => {
+  const deploy = { ...options, adminKey: token };
+  // A hint for the supervisor, which confirms with the backend itself.
+  const report = async (
+    outcome: "deployed" | "failed",
+    detail: string,
+  ): Promise<string> => {
     const result = await postSupervisor(
       supervisor,
       "report",
-      { candidateId, outcome, detail },
+      { candidateId, installationId, outcome, detail },
       SUPERVISOR_TIMEOUT_MS,
     );
     if (!result.ok) {
       logWarning(
         chalkStderr.yellow(
-          `Could not report the ${outcome} outcome of candidate ${candidateId} to the verifier: ${result.message}`,
+          `Could not report the ${outcome} outcome of installation ${installationId} to the verifier: ${result.message}`,
         ),
       );
+      return "pending_confirmation";
     }
+    const parsed = reportResult.safeParse(result.body);
+    return (
+      (parsed.success && parsed.data.confirmation) || "pending_confirmation"
+    );
   };
 
   showSpinner("Uploading functions to Convex...");
   const push = async () => {
     const startPushResponse = await parentSpan.enterAsync("startPush", (span) =>
-      startPush(ctx, span, request, options),
+      startPush(ctx, span, request, deploy),
     );
     if (options.verbose) {
       logMessage("startPush: " + JSON.stringify(startPushResponse, null, 2));
@@ -620,15 +690,56 @@ export async function runVerifiedPush(
       typeCheckFunctionsInMode(ctx, options.typecheck, rootComponent.path),
     );
     await parentSpan.enterAsync("waitForSchema", (span) =>
-      waitForSchema(ctx, span, startPushResponse, options),
+      waitForSchema(ctx, span, startPushResponse, deploy),
     );
     const finishPushResponse = await parentSpan.enterAsync(
       "finishPush",
-      (span) =>
-        finishPush(ctx, span, startPushResponse, {
-          ...options,
-          message: pushMessage(envelope, options.message),
-        }),
+      async (span) => {
+        // The backend ignores `message` on protected targets and writes its
+        // own provenance line; the user's is passed through unchanged.
+        const finish = { ...deploy, message: options.message ?? null };
+        try {
+          return await finishPush(ctx, span, startPushResponse, finish, true);
+        } catch (error: unknown) {
+          if (
+            reconcilable(error) &&
+            (await installationFinished(
+              ctx,
+              options.url,
+              token,
+              installationId,
+            ))
+          ) {
+            const reason =
+              error instanceof ThrowingFetchError
+                ? (error.serverErrorData?.message ??
+                  `HTTP ${error.response.status}`)
+                : String(error);
+            logFinishedStep(
+              `Installation ${installationId.slice(0, 12)} reconciled from the backend: finish_push had already completed (${reason}).`,
+            );
+            // The finish diff was lost with the answer; index diffs still
+            // print from the start_push response.
+            return {
+              authDiff: { added: [], removed: [] },
+              definitionDiffs: {},
+              componentDiffs: {},
+            } satisfies FinishPushDiff;
+          }
+          return await handlePushConfigError(
+            ctx,
+            error,
+            "Error: Unable to finish push to " + options.url,
+            options.deploymentName,
+            {
+              adminKey: token,
+              deploymentUrl: options.url,
+              deploymentNotice: "",
+            },
+            options.deploymentType,
+          );
+        }
+      },
     );
     return { startPushResponse, finishPushResponse };
   };
@@ -644,16 +755,33 @@ export async function runVerifiedPush(
     await report("failed", String(error));
     emit({
       status: "passed",
-      ...provenance(current),
+      ...known,
+      installationId,
       deploy: { status: "failed", detail: String(error) },
     });
     // eslint-disable-next-line no-restricted-syntax
     throw error;
   }
-  await report("deployed", `finish_push accepted by ${options.url}`);
+  const confirmation = await report(
+    "deployed",
+    `finish_push accepted by ${options.url}`,
+  );
+  if (CONFIRMED.has(confirmation)) {
+    logFinishedStep(
+      `Installation ${installationId.slice(0, 12)} confirmed by the backend`,
+    );
+  } else {
+    logWarning(
+      chalkStderr.yellow(
+        `Installation ${installationId.slice(0, 12)} deployed; the supervisor could not yet confirm it with the backend (${confirmation}) and will reconcile later.`,
+      ),
+    );
+  }
   emit({
     status: "passed",
-    ...provenance(current),
+    ...known,
+    installationId,
+    confirmation,
     deploy: { status: "deployed", detail: options.url },
   });
   return pushed;

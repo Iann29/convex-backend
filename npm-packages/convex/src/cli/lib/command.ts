@@ -3,6 +3,7 @@ import { OneoffCtx } from "../../bundler/context.js";
 import { LogMode } from "./logs.js";
 import {
   CONVEX_DEPLOYMENT_ENV_VAR_NAME,
+  CODING_CREDENTIAL_ENV_VAR_NAME,
   CONVEX_SELF_HOSTED_ADMIN_KEY_VAR_NAME,
   CONVEX_SELF_HOSTED_URL_VAR_NAME,
   parseInteger,
@@ -430,7 +431,7 @@ Command.prototype.addSelfHostOptions = function () {
     )
     .option(
       "--env <env>",
-      `Path to a custom file of environment variables, containing \`${CONVEX_SELF_HOSTED_URL_VAR_NAME}\` and \`${CONVEX_SELF_HOSTED_ADMIN_KEY_VAR_NAME}\`.`,
+      `Path to a custom file of environment variables, containing \`${CONVEX_SELF_HOSTED_URL_VAR_NAME}\` and \`${CONVEX_SELF_HOSTED_ADMIN_KEY_VAR_NAME}\` (or \`${CODING_CREDENTIAL_ENV_VAR_NAME}\` for a protected deployment).`,
     );
 };
 

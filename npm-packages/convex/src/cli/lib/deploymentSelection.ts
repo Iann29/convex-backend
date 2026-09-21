@@ -37,6 +37,7 @@ import {
   CONVEX_DEPLOYMENT_ENV_VAR_NAME,
   CONVEX_DEPLOYMENT_TOKEN_ENV_VAR_NAME,
   CONVEX_DEPLOY_KEY_ENV_VAR_NAME,
+  CODING_CREDENTIAL_ENV_VAR_NAME,
   CONVEX_SELF_HOSTED_ADMIN_KEY_VAR_NAME,
   CONVEX_SELF_HOSTED_URL_VAR_NAME,
   ENV_VAR_FILE_PATH,
@@ -564,7 +565,7 @@ async function resolveBaseDeploymentSelection(
         errorType: "invalid filesystem or env vars",
         printedMessage:
           `env file \`${cliArgs.envFile}\` did not contain environment variables for a Convex deployment. ` +
-          `Expected \`${CONVEX_DEPLOY_KEY_ENV_VAR_NAME}\`, \`${CONVEX_DEPLOYMENT_ENV_VAR_NAME}\`, or both \`${CONVEX_SELF_HOSTED_URL_VAR_NAME}\` and \`${CONVEX_SELF_HOSTED_ADMIN_KEY_VAR_NAME}\` to be set.`,
+          `Expected \`${CONVEX_DEPLOY_KEY_ENV_VAR_NAME}\`, \`${CONVEX_DEPLOYMENT_ENV_VAR_NAME}\`, or \`${CONVEX_SELF_HOSTED_URL_VAR_NAME}\` with \`${CONVEX_SELF_HOSTED_ADMIN_KEY_VAR_NAME}\` (or \`${CODING_CREDENTIAL_ENV_VAR_NAME}\` for a protected deployment) to be set.`,
       });
     }
     return result.metadata;
@@ -765,13 +766,21 @@ async function getDeploymentSelectionFromEnv(
   const convexDeployment = getEnv(CONVEX_DEPLOYMENT_ENV_VAR_NAME);
   const selfHostedUrl = getEnv(CONVEX_SELF_HOSTED_URL_VAR_NAME);
   const selfHostedAdminKey = getEnv(CONVEX_SELF_HOSTED_ADMIN_KEY_VAR_NAME);
+  // A protected self-hosted deployment (amage.verified-deploy/2) is pushed to
+  // with the supervisor's receipt, so the coding credential replaces the
+  // admin key for selection; an admin key, if present, only serves the
+  // administrative commands. `adminKey: ""` marks the key's absence.
+  const codingCredential = getEnv(CODING_CREDENTIAL_ENV_VAR_NAME);
 
-  if (selfHostedUrl !== null && selfHostedAdminKey !== null) {
+  if (
+    selfHostedUrl !== null &&
+    (selfHostedAdminKey !== null || codingCredential !== null)
+  ) {
     if (convexDeployment !== null) {
       return await ctx.crash({
         exitCode: 1,
         errorType: "invalid filesystem or env vars",
-        printedMessage: `${CONVEX_DEPLOYMENT_ENV_VAR_NAME} must not be set when ${CONVEX_SELF_HOSTED_URL_VAR_NAME} and ${CONVEX_SELF_HOSTED_ADMIN_KEY_VAR_NAME} are set`,
+        printedMessage: `${CONVEX_DEPLOYMENT_ENV_VAR_NAME} must not be set when ${CONVEX_SELF_HOSTED_URL_VAR_NAME} and ${selfHostedAdminKey !== null ? CONVEX_SELF_HOSTED_ADMIN_KEY_VAR_NAME : CODING_CREDENTIAL_ENV_VAR_NAME} are set`,
       });
     }
     return {
@@ -780,7 +789,7 @@ async function getDeploymentSelectionFromEnv(
         kind: "existingDeployment",
         deploymentToActOn: {
           url: selfHostedUrl,
-          adminKey: selfHostedAdminKey,
+          adminKey: selfHostedAdminKey ?? "",
           deploymentFields: null,
           source: "selfHosted",
         },
@@ -874,7 +883,7 @@ async function checkIfBuildEnvironmentRequiresDeploymentConfig(ctx: Context) {
         `${buildEnvironment} build environment detected but no Convex deployment configuration found.\n` +
         `Set one of:\n` +
         `  • ${CONVEX_DEPLOY_KEY_ENV_VAR_NAME} for Convex Cloud deployments\n` +
-        `  • ${CONVEX_SELF_HOSTED_URL_VAR_NAME} and ${CONVEX_SELF_HOSTED_ADMIN_KEY_VAR_NAME} for self-hosted deployments\n` +
+        `  • ${CONVEX_SELF_HOSTED_URL_VAR_NAME} and ${CONVEX_SELF_HOSTED_ADMIN_KEY_VAR_NAME} (or ${CODING_CREDENTIAL_ENV_VAR_NAME} for a protected deployment) for self-hosted deployments\n` +
         `See https://docs.convex.dev/production/hosting or https://docs.convex.dev/self-hosting`,
     });
   }
