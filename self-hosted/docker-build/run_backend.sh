@@ -51,15 +51,17 @@ else
 fi
 
 # --port and --site-proxy-port are internal to the container, so we pick them to
-# avoid conflicts in the container.
+# avoid conflicts in the container. PORT / SITE_PROXY_PORT override them for
+# --network host, where the backend must reach a supervisor on the host's
+# loopback (amage.verified-deploy) and 3210/3211 may already be taken.
 # --convex-origin and --convex-site are how the backend can be contacted from
 # the outside world. They show up in storage urls, action callbacks, etc.
 
 exec ./convex-local-backend "$@" \
     --instance-name "$INSTANCE_NAME" \
     --instance-secret "$INSTANCE_SECRET" \
-    --port 3210 \
-    --site-proxy-port 3211 \
+    --port "${PORT:-3210}" \
+    --site-proxy-port "${SITE_PROXY_PORT:-3211}" \
     --convex-origin "$CONVEX_CLOUD_ORIGIN" \
     --convex-site "$CONVEX_SITE_ORIGIN" \
     --beacon-tag "self-hosted-docker" \
