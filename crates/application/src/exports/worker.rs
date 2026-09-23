@@ -15,7 +15,10 @@ use common::{
     errors::report_error,
     execution_context::ExecutionId,
     runtime::Runtime,
-    types::UdfIdentifier,
+    types::{
+        ObjectKey,
+        UdfIdentifier,
+    },
     RequestId,
 };
 use database::{
@@ -194,6 +197,18 @@ impl<RT: Runtime> ExportWorker<RT> {
                     self.runtime.wait(delay).await;
                 },
             }
+        }
+    }
+
+    /// Deletes an object this attempt uploaded but never recorded on the
+    /// export. Only call it once the export can no longer reference the key.
+    async fn delete_unpublished_object(&self, id: ResolvedDocumentId, object_key: &ObjectKey) {
+        tracing::info!("Export {id} canceled after upload; deleting its unreferenced object");
+        if let Err(err) = self.exports_storage.delete_object(object_key).await {
+            report_error(&mut err.context(format!(
+                "Couldn't delete the unreferenced object of canceled export {id}"
+            )))
+            .await;
         }
     }
 
@@ -390,7 +405,8 @@ impl<RT: Runtime> ExportWorker<RT> {
 
         // Export is done; mark it as such.
         tracing::info!("Export {id} completed");
-        self.database
+        let marked_complete = self
+            .database
             .execute_with_occ_retries(
                 Identity::system(),
                 FunctionUsageTracker::new(),
@@ -422,7 +438,18 @@ impl<RT: Runtime> ExportWorker<RT> {
                     .into()
                 },
             )
-            .await?;
+            .await;
+        if let Err(err) = marked_complete {
+            if err.is::<ExportCanceled>() {
+                // The export was canceled (or deleted) after this attempt wrote
+                // its object. The transaction that would have published
+                // `object_key` saw the terminal state and did not commit, and
+                // no other document can name this attempt's fresh key, so the
+                // object is provably unreferenced.
+                self.delete_unpublished_object(id, &object_key).await;
+            }
+            return Err(err);
+        }
 
         let tag = requestor.usage_tag().to_string();
         let call_type = match requestor {
