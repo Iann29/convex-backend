@@ -1419,14 +1419,24 @@ async fn durable_pushes(st: &LocalAppState) -> anyhow::Result<Vec<DurablePush>> 
     Ok(pushes)
 }
 
-/// Whether `installation_id` finished at or after `since`, reading the audit
-/// log's pushes newest first until one predates `since`. Fails closed when the
-/// window holds more than `FINISH_SCAN_LIMIT` pushes: nothing is deployed.
+/// Whether `installation_id` finished at or after `since`. Fails closed when
+/// the window holds more than `FINISH_SCAN_LIMIT` pushes: nothing is deployed.
 async fn finished_since(
     st: &LocalAppState,
     installation_id: &str,
     since: SystemTime,
 ) -> anyhow::Result<bool> {
+    Ok(push_since(st, installation_id, since).await?.is_some())
+}
+
+/// The durable push that finished `installation_id` at or after `since`,
+/// reading the audit log's pushes newest first until one predates `since`; an
+/// error (never a guess) past `FINISH_SCAN_LIMIT` pushes.
+async fn push_since(
+    st: &LocalAppState,
+    installation_id: &str,
+    since: SystemTime,
+) -> anyhow::Result<Option<DurablePush>> {
     let mut tx = st.application.begin(Identity::system()).await?;
     let query = Query::index_range(IndexRange {
         index_name: AUDIT_LOG_INDEX_BY_ACTION.name(),
@@ -1451,28 +1461,33 @@ async fn finished_since(
     let mut read = 0;
     while let Some(document) = stream.next(&mut tx, None).await? {
         let created_ms = f64::from(document.creation_time()).max(0.0) as u64;
-        if UNIX_EPOCH + Duration::from_millis(created_ms) < since {
-            return Ok(false);
+        let finished_at = UNIX_EPOCH + Duration::from_millis(created_ms);
+        if finished_at < since {
+            return Ok(None);
         }
         read += 1;
         if read > FINISH_SCAN_LIMIT {
             return Err(rejected(format!(
-                "more than {FINISH_SCAN_LIMIT} pushes since the receipt was issued; cannot \
-                 establish that installation {installation_id} did not already finish; nothing \
-                 was deployed"
+                "more than {FINISH_SCAN_LIMIT} pushes in the window; cannot establish whether \
+                 installation {installation_id} already finished"
             )));
         }
         let event: Value = document.into_value().into_value().into();
-        if event
+        let binding = event
             .pointer("/metadata/message")
             .and_then(Value::as_str)
-            .and_then(Binding::parse_provenance)
+            .and_then(Binding::parse_provenance);
+        if binding
+            .as_ref()
             .is_some_and(|binding| binding.installation_id == installation_id)
         {
-            return Ok(true);
+            return Ok(Some(DurablePush {
+                finished_at,
+                binding,
+            }));
         }
     }
-    Ok(false)
+    Ok(None)
 }
 
 fn format_timestamp(time: SystemTime) -> String {
@@ -1638,8 +1653,9 @@ pub async fn installations_handler(
     })))
 }
 
-/// `GET /api/amage/installations/{installation_id}`: memory first, then the
-/// durable audit log, else `unknown`.
+/// `GET /api/amage/installations/{installation_id}`: memory first, then every
+/// durable push a still-meaningful receipt could have made (the longest
+/// accepted receipt lifetime plus clock skew), else `unknown`.
 pub async fn installation_handler(
     MtState(st): MtState<LocalAppState>,
     Path(id): Path<String>,
@@ -1655,13 +1671,14 @@ pub async fn installation_handler(
     let entry = installations().0.get(&id).cloned();
     let installation = match entry {
         Some(entry) => entry_json(&id, &entry, active_id),
-        None => match pushes.iter().find(|push| {
-            push.binding
-                .as_ref()
-                .is_some_and(|b| b.installation_id == id)
-        }) {
-            Some(push) => durable_json(push, active_id == Some(id.as_str())),
-            None => installation_json(&id, None, "unknown", None, None, None, false),
+        None => {
+            let since = SystemTime::now()
+                .checked_sub(MAX_LIFETIME + MAX_CLOCK_SKEW)
+                .unwrap_or(UNIX_EPOCH);
+            match push_since(&st, &id, since).await? {
+                Some(push) => durable_json(&push, active_id == Some(id.as_str())),
+                None => installation_json(&id, None, "unknown", None, None, None, false),
+            }
         },
     };
     Ok(axum::Json(json!({
