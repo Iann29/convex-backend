@@ -115,6 +115,9 @@ const MAX_INSTALLATIONS: usize = 1000;
 const INSTALLATION_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 const ONLINE_TIMEOUT: Duration = Duration::from_secs(5);
 const AUDIT_LOG_LIMIT: usize = 100;
+/// Pushes a replay check reads back to a receipt's `issuedAt` before failing
+/// closed; receipts live at most `MAX_LIFETIME`.
+const FINISH_SCAN_LIMIT: usize = 10_000;
 
 // --- configuration ----------------------------------------------------------
 
@@ -800,8 +803,20 @@ fn install_receipt(
     instance_name: &str,
     now: SystemTime,
 ) -> Result<Binding, String> {
+    install_receipt_issued(trust, token, instance_name, now).map(|(binding, _)| binding)
+}
+
+/// A verified `install` receipt and its `issuedAt` (already inside the window
+/// `check_window` accepted).
+fn install_receipt_issued(
+    trust: &Trust,
+    token: &str,
+    instance_name: &str,
+    now: SystemTime,
+) -> Result<(Binding, SystemTime), String> {
     let (_, object) = verify_token(trust, token, &[Kind::Install], instance_name, now)?;
-    Binding::parse(&object)
+    let issued = parse_timestamp("issuedAt", &object["issuedAt"])?;
+    Ok((Binding::parse(&object)?, issued))
 }
 
 // --- identity (§5) ----------------------------------------------------------
@@ -1117,6 +1132,19 @@ fn install_credential(
     install_receipt(&protection.config.trust, credential, instance_name, now).map_err(rejected)
 }
 
+fn install_credential_issued(
+    protection: &Protection,
+    credential: &str,
+    instance_name: &str,
+    now: SystemTime,
+) -> anyhow::Result<(Binding, SystemTime)> {
+    if !credential.starts_with(TOKEN_FAMILY) {
+        return Err(required());
+    }
+    install_receipt_issued(&protection.config.trust, credential, instance_name, now)
+        .map_err(rejected)
+}
+
 fn check_shape(req: &StartPushRequest) -> anyhow::Result<()> {
     let refused = if !req.component_definitions.is_empty() {
         "components are not allowed on protected deployments"
@@ -1155,23 +1183,28 @@ pub async fn start(
         return Ok(None);
     };
     let now = SystemTime::now();
-    let binding = install_credential(protection, &req.admin_key, &st.instance_name, now)?;
+    let (binding, issued_at) =
+        install_credential_issued(protection, &req.admin_key, &st.instance_name, now)?;
     anyhow::ensure!(
         binding.request_sha256 == request_digest(raw).as_hex(),
         rejected("request digest does not match receipt")
     );
     check_shape(req)?;
     let id = binding.installation_id.clone();
-    // Unknown here (e.g. after a restart): the durable log decides whether
-    // this installation already happened. The table lock is released before
+    // Unknown here (after a restart or a prune): the durable log decides
+    // whether this installation already happened. Its finish cannot predate
+    // the receipt, so every push since `issuedAt` (less the tolerated skew) is
+    // read; a fixed count of recent pushes let a replay through once enough
+    // other installations had followed it. The table lock is released before
     // the read transaction.
     let unknown_here = installations().state(&id).is_none();
     if unknown_here
-        && durable_pushes(st).await?.iter().any(|push| {
-            push.binding
-                .as_ref()
-                .is_some_and(|b| b.installation_id == id)
-        })
+        && finished_since(
+            st,
+            &id,
+            issued_at.checked_sub(MAX_CLOCK_SKEW).unwrap_or(UNIX_EPOCH),
+        )
+        .await?
     {
         return Err(rejected(format!("installation {id} already finished")));
     }
@@ -1384,6 +1417,62 @@ async fn durable_pushes(st: &LocalAppState) -> anyhow::Result<Vec<DurablePush>> 
         });
     }
     Ok(pushes)
+}
+
+/// Whether `installation_id` finished at or after `since`, reading the audit
+/// log's pushes newest first until one predates `since`. Fails closed when the
+/// window holds more than `FINISH_SCAN_LIMIT` pushes: nothing is deployed.
+async fn finished_since(
+    st: &LocalAppState,
+    installation_id: &str,
+    since: SystemTime,
+) -> anyhow::Result<bool> {
+    let mut tx = st.application.begin(Identity::system()).await?;
+    let query = Query::index_range(IndexRange {
+        index_name: AUDIT_LOG_INDEX_BY_ACTION.name(),
+        range: vec![IndexRangeExpression::Eq(
+            ACTION_FIELD.clone(),
+            ConvexValue::try_from(PUSH_ACTION)?.into(),
+        )],
+        order: Order::Desc,
+    });
+    let mut stream = ResolvedQuery::new_bounded(
+        &mut tx,
+        TableNamespace::Global,
+        query,
+        PaginationOptions::ManualPagination {
+            start_cursor: None,
+            maximum_rows_read: Some(FINISH_SCAN_LIMIT + 1),
+            maximum_bytes_read: None,
+        },
+        None,
+        TableFilter::IncludePrivateSystemTables,
+    )?;
+    let mut read = 0;
+    while let Some(document) = stream.next(&mut tx, None).await? {
+        let created_ms = f64::from(document.creation_time()).max(0.0) as u64;
+        if UNIX_EPOCH + Duration::from_millis(created_ms) < since {
+            return Ok(false);
+        }
+        read += 1;
+        if read > FINISH_SCAN_LIMIT {
+            return Err(rejected(format!(
+                "more than {FINISH_SCAN_LIMIT} pushes since the receipt was issued; cannot \
+                 establish that installation {installation_id} did not already finish; nothing \
+                 was deployed"
+            )));
+        }
+        let event: Value = document.into_value().into_value().into();
+        if event
+            .pointer("/metadata/message")
+            .and_then(Value::as_str)
+            .and_then(Binding::parse_provenance)
+            .is_some_and(|binding| binding.installation_id == installation_id)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn format_timestamp(time: SystemTime) -> String {
