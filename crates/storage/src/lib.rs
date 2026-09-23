@@ -939,12 +939,13 @@ impl<RT: Runtime> Storage for LocalDirStorage<RT> {
         fs::create_dir_all(filepath.parent().expect("Must have parent")).context(
             "LocalDirStorage file creation failed. Perhaps the storage object key isn't valid?",
         )?;
-        let file = File::create(filepath).context(
+        let file = File::create(&filepath).context(
             "LocalDirStorage file creation failed. Perhaps the storage object key isn't valid?",
         )?;
 
         let upload = LocalDirUpload {
             object_key,
+            filepath,
             file: Some(file),
         };
         // Local files have no multipart-count limit. Keep chunks small instead of
@@ -986,15 +987,15 @@ impl<RT: Runtime> Storage for LocalDirStorage<RT> {
         part: Bytes,
     ) -> anyhow::Result<ClientDrivenUploadPartToken> {
         let ClientDrivenUpload {
-            object_key,
+            object_key: _,
             filepath,
         } = token.try_into()?;
-        let file = OpenOptions::new().append(true).open(filepath)?;
-        let mut upload = LocalDirUpload {
-            object_key,
-            file: Some(file),
-        };
-        upload.write(part).await?;
+        // Client-driven parts append to a file that outlives this call, so they
+        // must not go through `LocalDirUpload`, which discards its file unless
+        // it is completed.
+        anyhow::ensure!(part.len() <= LOCAL_DIR_MAX_PART_SIZE);
+        let mut file = OpenOptions::new().append(true).open(filepath)?;
+        file.write_all(&part)?;
         Ok(ClientDrivenUploadPartToken(String::new()))
     }
 
@@ -1158,9 +1159,46 @@ impl<RT: Runtime> Storage for LocalDirStorage<RT> {
     }
 }
 
+/// An upload into a `.blob` file created by `LocalDirStorage::start_upload`.
+///
+/// The file lives at its final path from the first write, so an upload that
+/// is aborted, fails to complete, or is dropped (for example because the
+/// future driving it was canceled) removes the file. This mirrors S3, where an
+/// incomplete multipart upload never becomes an object. Removing it is safe:
+/// the key is a fresh UUID generated for this upload and is only handed out by
+/// a successful `complete`, so nothing can reference an uncompleted file.
 pub struct LocalDirUpload {
     object_key: ObjectKey,
+    filepath: PathBuf,
+    /// `Some` while the upload is active; taken by `abort` and `complete`.
     file: Option<File>,
+}
+
+impl LocalDirUpload {
+    /// Closes and removes the file of an upload that will never complete.
+    fn discard(&mut self) -> anyhow::Result<()> {
+        if self.file.take().is_none() {
+            return Ok(());
+        }
+        match fs::remove_file(&self.filepath) {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(err) => Err(err).with_context(|| {
+                format!(
+                    "Couldn't remove incomplete upload {}",
+                    self.filepath.display()
+                )
+            }),
+        }
+    }
+}
+
+impl Drop for LocalDirUpload {
+    fn drop(&mut self) {
+        if let Err(err) = self.discard() {
+            tracing::error!("{err:#}");
+        }
+    }
 }
 
 #[async_trait]
@@ -1189,16 +1227,15 @@ impl Upload for LocalDirUpload {
 
     async fn abort(mut self: Box<Self>) -> anyhow::Result<()> {
         anyhow::ensure!(self.file.is_some());
-        self.file.take();
-        Ok(())
+        self.discard()
     }
 
     async fn complete(mut self: Box<Self>) -> anyhow::Result<ObjectKey> {
-        let object_key = self.object_key;
-
-        let file = self.file.take().context("Completing inactive file")?;
+        let file = self.file.as_ref().context("Completing inactive file")?;
+        // On failure the file stays active, so dropping `self` discards it.
         file.sync_all()?;
-        Ok(object_key)
+        self.file.take();
+        Ok(self.object_key.clone())
     }
 }
 
@@ -1389,6 +1426,107 @@ mod tests {
             assert_eq!(
                 fs::read(storage.fully_qualified_key(&key).as_str())?,
                 expected
+            );
+            Ok(())
+        })
+    }
+
+    async fn local_blob_keys(
+        storage: &LocalDirStorage<ProdRuntime>,
+    ) -> anyhow::Result<Vec<ObjectKey>> {
+        let mut keys: Vec<_> = storage
+            .list_objects("")
+            .await?
+            .into_iter()
+            .map(|listing| listing.key)
+            .collect();
+        keys.sort();
+        Ok(keys)
+    }
+
+    #[test]
+    fn local_upload_abort_removes_blob() -> anyhow::Result<()> {
+        let (tokio, storage) = local_storage()?;
+        tokio.block_on(async {
+            let mut upload = storage.start_upload().await?;
+            upload
+                .write(Bytes::from(vec![1; 3 * LOCAL_DIR_MIN_PART_SIZE]))
+                .await?;
+            assert_eq!(local_blob_keys(&storage).await?.len(), 1);
+            upload.abort().await?;
+            assert_eq!(local_blob_keys(&storage).await?, vec![]);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn local_upload_dropped_before_complete_removes_blob() -> anyhow::Result<()> {
+        let (tokio, storage) = local_storage()?;
+        tokio.block_on(async {
+            let mut upload = storage.start_upload().await?;
+            upload
+                .write(Bytes::from(vec![2; 3 * LOCAL_DIR_MIN_PART_SIZE]))
+                .await?;
+            drop(upload);
+            assert_eq!(local_blob_keys(&storage).await?, vec![]);
+
+            // The export worker's case: the future writing the upload loses a
+            // `select` against cancellation while its input is still streaming.
+            let mut upload = storage.start_upload().await?;
+            let chunk = Bytes::from(vec![3; 3 * LOCAL_DIR_MIN_PART_SIZE]);
+            let input = stream::iter([Ok(chunk)]).chain(stream::pending());
+            let write = upload.try_write_parallel_and_hash(input);
+            let canceled = tokio::time::timeout(Duration::from_millis(50), write).await;
+            assert!(canceled.is_err(), "the pending input should never finish");
+            assert_eq!(local_blob_keys(&storage).await?.len(), 1);
+            drop(upload);
+            assert_eq!(local_blob_keys(&storage).await?, vec![]);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn local_completed_upload_is_kept() -> anyhow::Result<()> {
+        let (tokio, storage) = local_storage()?;
+        tokio.block_on(async {
+            let mut upload = storage.start_upload().await?;
+            upload.write(Bytes::from_static(b"kept")).await?;
+            let key = upload.complete().await?;
+
+            // An abandoned upload next to it only removes its own file.
+            let mut abandoned = storage.start_upload().await?;
+            abandoned.write(Bytes::from_static(b"gone")).await?;
+            assert_eq!(local_blob_keys(&storage).await?.len(), 2);
+            drop(abandoned);
+
+            assert_eq!(local_blob_keys(&storage).await?, vec![key.clone()]);
+            assert_eq!(
+                fs::read(storage.fully_qualified_key(&key).as_str())?,
+                b"kept"
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn local_client_driven_upload_keeps_parts() -> anyhow::Result<()> {
+        let (tokio, storage) = local_storage()?;
+        tokio.block_on(async {
+            let token = storage.start_client_driven_upload().await?;
+            let mut part_tokens = vec![];
+            for (number, part) in [(1, &b"client "[..]), (2, &b"driven"[..])] {
+                part_tokens.push(
+                    storage
+                        .upload_part(token.clone(), number, Bytes::from_static(part))
+                        .await?,
+                );
+            }
+            let key = storage
+                .finish_client_driven_upload(token, part_tokens)
+                .await?;
+            assert_eq!(
+                fs::read(storage.fully_qualified_key(&key).as_str())?,
+                b"client driven"
             );
             Ok(())
         })
