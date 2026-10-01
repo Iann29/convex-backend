@@ -21,7 +21,10 @@ use std::{
         NonZeroU32,
         NonZeroUsize,
     },
-    sync::LazyLock,
+    sync::{
+        LazyLock,
+        OnceLock,
+    },
     time::Duration,
 };
 
@@ -1019,6 +1022,11 @@ pub static WRITE_THROUGHPUT_WINDOW: LazyLock<Duration> =
 /// constants and is also used to determine if an instance is on a pro plan.
 pub static DEFAULT_APPLICATION_MAX_FUNCTION_CONCURRENCY: usize = 16;
 
+/// Default for `APPLICATION_MAX_CONCURRENT_QUERIES` chosen by the persistence
+/// layer at startup, before the limit is first read; unset means
+/// `DEFAULT_APPLICATION_MAX_FUNCTION_CONCURRENCY`.
+pub static APPLICATION_DEFAULT_CONCURRENT_QUERIES: OnceLock<usize> = OnceLock::new();
+
 /// The maximum number of queries that can be run concurrently by an
 /// application.
 ///
@@ -1028,7 +1036,10 @@ pub static DEFAULT_APPLICATION_MAX_FUNCTION_CONCURRENCY: usize = 16;
 pub static APPLICATION_MAX_CONCURRENT_QUERIES: LazyLock<usize> = LazyLock::new(|| {
     env_config(
         "APPLICATION_MAX_CONCURRENT_QUERIES",
-        DEFAULT_APPLICATION_MAX_FUNCTION_CONCURRENCY,
+        APPLICATION_DEFAULT_CONCURRENT_QUERIES
+            .get()
+            .copied()
+            .unwrap_or(DEFAULT_APPLICATION_MAX_FUNCTION_CONCURRENCY),
     )
 });
 

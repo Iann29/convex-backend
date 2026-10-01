@@ -14,7 +14,11 @@ use clusters::{
 };
 use cmd_util::env::env_config;
 use common::{
-    knobs::DATABASE_USE_PREPARED_STATEMENTS,
+    knobs::{
+        APPLICATION_DEFAULT_CONCURRENT_QUERIES,
+        DATABASE_USE_PREPARED_STATEMENTS,
+        DEFAULT_APPLICATION_MAX_FUNCTION_CONCURRENCY,
+    },
     persistence::{
         Persistence,
         PersistenceReader,
@@ -52,7 +56,20 @@ async fn connect_sqlite(db_spec: &str) -> anyhow::Result<Arc<dyn Persistence>> {
         },
         "turso" => {
             let persistence = Arc::new(TursoPersistence::new(db_spec).await?);
-            tracing::info!("Connected to SQLite at {db_spec} with Turso");
+            // Turso serves reads in parallel and a query spends its time on
+            // the CPU, not waiting on I/O: beyond about two queries per CPU,
+            // more in flight only contend. On 4 vCPUs, 8 against 16 gave as
+            // many reads, 4–10% more writes and a lower write p50.
+            let cpus = std::thread::available_parallelism().map_or(1, usize::from);
+            let queries = (2 * cpus).clamp(4, DEFAULT_APPLICATION_MAX_FUNCTION_CONCURRENCY);
+            if APPLICATION_DEFAULT_CONCURRENT_QUERIES.set(queries).is_ok() {
+                tracing::info!(
+                    "Connected to SQLite at {db_spec} with Turso; default query concurrency \
+                     {queries} for {cpus} CPUs"
+                );
+            } else {
+                tracing::info!("Connected to SQLite at {db_spec} with Turso");
+            }
             Ok(persistence)
         },
         other => anyhow::bail!("CONVEX_SQLITE_ENGINE must be rusqlite or turso, got {other:?}"),
