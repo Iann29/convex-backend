@@ -2039,3 +2039,18 @@ pub static HTTP2_CLIENT_KEEPALIVE_INTERVAL: LazyLock<Duration> = LazyLock::new(|
 /// dropped.
 pub static HTTP2_CLIENT_KEEPALIVE_TIMEOUT: LazyLock<Duration> =
     LazyLock::new(|| Duration::from_secs(env_config("HTTP2_CLIENT_KEEPALIVE_TIMEOUT_SECONDS", 15)));
+
+/// Journal of the SQLite (rusqlite) persistence file: `wal` or `delete`. WAL
+/// cuts commit latency several times over and lets readers see a snapshot
+/// while a commit is in flight; `delete` converts the file back to the
+/// rollback journal older images defaulted to (every SQLite since 3.7.0 opens
+/// both).
+pub static SQLITE_JOURNAL_MODE: LazyLock<String> =
+    LazyLock::new(|| env_config("CONVEX_SQLITE_JOURNAL_MODE", "wal".to_owned()));
+
+/// `synchronous` for the SQLite persistence file: `full` (fsync every commit,
+/// the default) or `normal`, accepted only with the `wal` journal, where a
+/// power loss can drop the last commits (for dev and previews only). The
+/// Turso engine always syncs every commit.
+pub static SQLITE_SYNCHRONOUS: LazyLock<String> =
+    LazyLock::new(|| env_config("CONVEX_SQLITE_SYNCHRONOUS", "full".to_owned()));

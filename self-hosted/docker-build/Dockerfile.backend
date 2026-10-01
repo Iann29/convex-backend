@@ -90,6 +90,9 @@ RUN curl -fsSL https://mise.run | MISE_VERSION="v$(sed -nE 's/^min_version = "([
 # directory, so it must be present before `cargo chef cook` builds dependencies.
 COPY .cargo/config.toml ./.cargo/config.toml
 COPY --from=chef /tmp/recipe.json recipe.json
+# The recipe skeletons only workspace members; a dependency patched in from
+# crates_vendor/ ([patch.crates-io]) needs its real sources to be cooked.
+COPY crates_vendor ./crates_vendor
 # Use cargo-chef to build dependencies from the recipe created in the first stage
 # This step will be cached unless dependencies change
 RUN --mount=type=cache,target=/convex/target/ --mount=type=cache,target=/usr/local/cargo/git/db --mount=type=cache,target=/usr/local/cargo/registry/ PROTOC="$(mise which protoc)" cargo chef cook --release --recipe-path recipe.json

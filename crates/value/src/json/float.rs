@@ -11,6 +11,11 @@ impl JsonFloat {
 
     /// Decode an `f64` from a string.
     pub fn decode(s: String) -> anyhow::Result<f64> {
+        Self::decode_str(&s)
+    }
+
+    /// Decode from a borrowed string (same rules as [`Self::decode`]).
+    pub(crate) fn decode_str(s: &str) -> anyhow::Result<f64> {
         let bytes: [u8; 8] = base64::decode(s.as_bytes())?
             .try_into()
             .map_err(|_| anyhow!("Float64 must be exactly eight bytes"))?;

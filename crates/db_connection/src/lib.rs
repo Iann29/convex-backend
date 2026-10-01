@@ -1,6 +1,9 @@
 use std::{
     collections::HashMap,
-    sync::Arc,
+    sync::{
+        Arc,
+        LazyLock,
+    },
 };
 
 use anyhow::Context as _;
@@ -9,6 +12,7 @@ use clusters::{
     DbDriverTag,
     PersistenceArgs,
 };
+use cmd_util::env::env_config;
 use common::{
     knobs::DATABASE_USE_PREPARED_STATEMENTS,
     persistence::{
@@ -31,6 +35,29 @@ use postgres::{
 };
 use sqlite::SqlitePersistence;
 use tokio_postgres::config::TargetSessionAttrs;
+use turso_persistence::TursoPersistence;
+
+/// Engine behind `--db sqlite`. Both read and write the same `db.sqlite3`,
+/// so switching back and forth needs no migration; Turso leaves the file in
+/// WAL mode, which the `sqlite` crate reads as well.
+static SQLITE_ENGINE: LazyLock<String> =
+    LazyLock::new(|| env_config("CONVEX_SQLITE_ENGINE", "rusqlite".to_owned()));
+
+async fn connect_sqlite(db_spec: &str) -> anyhow::Result<Arc<dyn Persistence>> {
+    match SQLITE_ENGINE.as_str() {
+        "rusqlite" => {
+            let persistence = Arc::new(SqlitePersistence::new(db_spec)?);
+            tracing::info!("Connected to SQLite at {db_spec}");
+            Ok(persistence)
+        },
+        "turso" => {
+            let persistence = Arc::new(TursoPersistence::new(db_spec).await?);
+            tracing::info!("Connected to SQLite at {db_spec} with Turso");
+            Ok(persistence)
+        },
+        other => anyhow::bail!("CONVEX_SQLITE_ENGINE must be rusqlite or turso, got {other:?}"),
+    }
+}
 
 #[derive(Copy, Clone, Debug)]
 pub struct ConnectPersistenceFlags {
@@ -147,11 +174,7 @@ pub async fn connect_persistence<RT: Runtime>(
     shutdown_signal: ShutdownSignal,
 ) -> anyhow::Result<Arc<dyn Persistence>> {
     match persistence_seed(db, db_spec, flags, deployment_name, deployment_id, runtime)? {
-        PersistenceSeed::Sqlite { db_spec } => {
-            let persistence = Arc::new(SqlitePersistence::new(&db_spec)?);
-            tracing::info!("Connected to SQLite at {db_spec}");
-            Ok(persistence as Arc<dyn Persistence>)
-        },
+        PersistenceSeed::Sqlite { db_spec } => connect_sqlite(&db_spec).await,
         PersistenceSeed::Postgres {
             mut config,
             options,
@@ -197,9 +220,7 @@ pub async fn connect_persistence_reader<RT: Runtime>(
         deployment_id,
         runtime,
     )? {
-        PersistenceSeed::Sqlite { db_spec } => {
-            Ok(Arc::new(SqlitePersistence::new(&db_spec)?) as Arc<dyn PersistenceReader>)
-        },
+        PersistenceSeed::Sqlite { db_spec } => Ok(connect_sqlite(&db_spec).await?.reader()),
         PersistenceSeed::Postgres { config, options } => {
             let options = PostgresReaderOptions {
                 version: options.version,

@@ -107,6 +107,9 @@ utoipa-axum = { workspace = true }
 value = { workspace = true }
 vector = { workspace = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+tikv-jemallocator = { workspace = true }
+
 [build-dependencies]
 anyhow = { workspace = true }
 vergen = { workspace = true, features = ["git", "gitcl"] }

@@ -9,6 +9,7 @@
 //! 4) Objects are not allowed to have keys starting with "$".
 
 pub mod bytes;
+mod decode;
 pub mod float;
 pub mod integer;
 pub(crate) mod json_packed_value;
@@ -331,12 +332,32 @@ impl ConvexArray {
     }
 }
 
+/// Decode internal JSON (as produced by `json_serialize`) straight into a
+/// [`ConvexValue`], without a `serde_json::Value` intermediate. Accepts and
+/// rejects exactly what `serde_json::from_slice::<JsonValue>` followed by
+/// `ConvexValue::try_from` does.
 pub fn json_deserialize_bytes(s: &[u8]) -> anyhow::Result<ConvexValue> {
+    decode::decode_slice(s)
+}
+
+/// String version of [`json_deserialize_bytes`].
+pub fn json_deserialize(s: &str) -> anyhow::Result<ConvexValue> {
+    decode::decode_str(s)
+}
+
+/// The two-step decoder the direct one must match (differential tests and
+/// benchmark).
+#[cfg(test)]
+fn json_deserialize_bytes_reference(s: &[u8]) -> anyhow::Result<ConvexValue> {
     let v: serde_json::Value = serde_json::from_slice(s)?;
     v.try_into()
 }
 
-pub fn json_deserialize(s: &str) -> anyhow::Result<ConvexValue> {
+#[cfg(test)]
+fn json_deserialize_reference(s: &str) -> anyhow::Result<ConvexValue> {
     let v: serde_json::Value = serde_json::from_str(s)?;
     v.try_into()
 }
+
+#[cfg(test)]
+mod decode_tests;

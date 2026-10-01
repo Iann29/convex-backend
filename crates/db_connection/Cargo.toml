@@ -12,12 +12,14 @@ testing = ["clusters/testing", "common/testing", "mysql/testing", "postgres/test
 [dependencies]
 anyhow = { workspace = true }
 clusters = { workspace = true }
+cmd_util = { workspace = true }
 common = { workspace = true }
 mysql = { workspace = true }
 postgres = { workspace = true }
 sqlite = { workspace = true }
 tokio-postgres = { workspace = true }
 tracing = { workspace = true }
+turso_persistence = { workspace = true }
 
 [dev-dependencies]
 clusters = { workspace = true, features = ["testing"] }

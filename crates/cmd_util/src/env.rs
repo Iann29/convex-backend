@@ -112,7 +112,15 @@ where
             _ => EventFilter::Breadcrumb,
         })
         .span_filter(|_md| false);
-    layers.push(sentry_layer.boxed());
+    // The layer ignores DEBUG and TRACE events, but only a level filter lets
+    // the registry know it before the event is built: unfiltered, it makes
+    // `enabled!(TRACE)` true process-wide, so every debug!/trace! callsite
+    // formats its fields and the Turso VM traces each instruction.
+    layers.push(
+        sentry_layer
+            .with_filter(tracing::level_filters::LevelFilter::INFO)
+            .boxed(),
+    );
 
     let guard = if let Some(ref file) = *CONVEX_TRACE_FILE {
         let (file_writer, guard) = tracing_appender::non_blocking(file);

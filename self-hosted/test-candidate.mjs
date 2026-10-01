@@ -196,6 +196,8 @@ async function runCase(image, version, pg, engine, ip) {
     CONVEX_RELEASE_VERSION_DEV: "must-not-override-candidate",
   };
   const db = name.replaceAll("-", "_");
+  // Turso runs the SQLite layout on the same volume, through another engine.
+  if (engine === "turso") env.CONVEX_SQLITE_ENGINE = "turso";
   if (engine === "postgres") {
     await docker(["exec", pg.id, "createdb", "-U", "postgres", db]);
     env.POSTGRES_URL = `postgresql://postgres:${pg.password}@${pg.ip}:5432`;
@@ -567,6 +569,8 @@ try {
       patchPaths.every((p) => typeof p === "string" && !p.startsWith("/")),
     "manifest.patchPaths must be repository-relative paths",
   );
+  // The algorithm is pinned so the hash does not follow the caller's
+  // diff.algorithm; recorded hashes use histogram.
   const { stdout: patch } = await exec(
     "git",
     [
@@ -576,6 +580,7 @@ try {
       "--binary",
       "--no-ext-diff",
       "--no-color",
+      "--diff-algorithm=histogram",
       "--src-prefix=a/",
       "--dst-prefix=b/",
       "--abbrev=9",
@@ -583,7 +588,8 @@ try {
       "--",
       ...patchPaths,
     ],
-    { encoding: "buffer" },
+    // A vendored crate makes the patch tens of megabytes.
+    { encoding: "buffer", maxBuffer: 1 << 30 },
   );
   assert.equal(digest(patch), manifest.patchSha256);
   assert.equal(labels["org.amage.base-revision"], base);
@@ -661,7 +667,7 @@ try {
       internalNetwork: net.Name,
     }),
   );
-  for (const [index, engine] of ["sqlite", "postgres"].entries())
+  for (const [index, engine] of ["sqlite", "postgres", "turso"].entries())
     await runCase(
       image.Id,
       version,

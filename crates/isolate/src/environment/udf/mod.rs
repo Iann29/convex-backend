@@ -514,6 +514,9 @@ impl<RT: Runtime> DatabaseUdfInnerProvider<RT> for DatabaseUdfSyscallProvider<RT
     }
 }
 
+/// How many turns of the syscall loop share one refresh of the heap stats.
+const HEAP_STATS_TURNS: u32 = 16;
+
 type UdfRecursiveExecutor<RT> = RecursiveExecutor<
     anyhow::Result<(
         DatabaseUdfEnvironment<RT>,
@@ -589,6 +592,42 @@ impl<'a, 'b, RT: Runtime> UdfCallback<RT> for RunUdf<'a, 'b, RT> {
             nested_provider.syscall_provider.phase.into_transaction()?,
             outcome,
         ))
+    }
+}
+
+/// The callback of a read batch: reads never run a nested function.
+struct NoNestedUdf;
+
+impl<RT: Runtime> UdfCallback<RT> for NoNestedUdf {
+    async fn execute_nested_udf(
+        self,
+        _client_id: String,
+        _udf_request: UdfRequest<RT>,
+        _rng_seed: [u8; 32],
+        _reactor_depth: usize,
+    ) -> anyhow::Result<(Transaction<RT>, NestedUdfOutcome)> {
+        anyhow::bail!("a read batch cannot run a nested function")
+    }
+}
+
+/// Closes the EXPLAIN spans of a syscall batch that started at `start_ms`.
+fn finish_batch_explanations(
+    explanations: Option<Vec<Option<Box<crate::explain::ExplainSyscall>>>>,
+    start_ms: Option<f64>,
+    results: &[anyhow::Result<String>],
+) {
+    let Some(explanations) = explanations else {
+        return;
+    };
+    for (explain, result) in explanations.into_iter().zip(results) {
+        if let Some(explain) = explain {
+            explain.finish(
+                start_ms.unwrap_or_default(),
+                result.is_ok(),
+                common::explain::SyscallTiming::AsyncBatch,
+                None,
+            );
+        }
     }
 }
 
@@ -1109,12 +1148,19 @@ where
             Err(e) => return Ok(Err(e)),
         };
         let mut cancellation = cancellation;
+        let mut turn: u32 = 0;
         loop {
             // Advance the user's promise as far as it can go by draining the microtask
             // queue.
             scope.perform_microtask_checkpoint();
             pump_message_loop(&scope);
-            scope.record_heap_stats(handle)?;
+            // The heap stats only feed the aggregated gauge and the out-of-memory
+            // report. A query takes one turn per document, so refresh them every
+            // few turns instead of on each one.
+            if turn % HEAP_STATS_TURNS == 0 {
+                scope.record_heap_stats(handle)?;
+            }
+            turn = turn.wrapping_add(1);
             handle.check_terminated()?;
 
             // Check for rejected promises still unhandled, if so terminate.
@@ -1181,23 +1227,48 @@ where
                     }
                     resolvers.push(p.resolver);
                 }
-                // Pause the user-code UDF timeout for the duration of the syscall.
-                // This works because we know that the user is blocked on some syscall,
-                // so running the syscall is on us and we shouldn't count this time
-                // towards the user timeout. When we allow more concurrency, we
-                // may have to rework this.
-                // NOTE: Even though we release the permit, the syscall does in v8.
-                // It is better if we run it in tokio to avoid oversubscribing the CPU.
-                // TODO: Consider running the async call from a tokio thread.
-                // Even though the future would be blocking on the database most of the
-                // time it still does some processing that might result in oversubscribing
-                // the CPU threads dedicated to v8.
-                let results = timeout
-                    .with_release_permit_regainable(
-                        PauseReason::DatabaseSyscall {
-                            name: batch.name().to_string(),
-                        },
-                        async |paused_timeout| {
+                let reason = PauseReason::DatabaseSyscall {
+                    name: batch.name().to_string(),
+                };
+                let explain_start = explanations
+                    .as_ref()
+                    .and_then(|spans| spans.iter().flatten().next())
+                    .map(|span| span.start_ms());
+                let results = if matches!(batch, AsyncSyscallBatch::Reads(_)) {
+                    // A query reads one document per syscall, and the next one is
+                    // usually already in memory. Run reads holding the permit: the
+                    // timeout pauses and the permit is released only if the batch
+                    // has to wait. Reads never run a nested function.
+                    timeout
+                        .with_release_permit(reason, async {
+                            let results = select! {
+                                biased;
+                                _ = &mut cancellation => {
+                                    log_isolate_request_cancelled();
+                                    anyhow::bail!("Cancelled");
+                                },
+                                results = state.environment.syscall_provider
+                                    .run_async_syscall_batch(batch, NoNestedUdf)
+                                => anyhow::Ok(results),
+                            }?;
+                            finish_batch_explanations(explanations, explain_start, &results);
+                            Ok(results)
+                        })
+                        .await?
+                } else {
+                    // Pause the user-code UDF timeout for the duration of the syscall.
+                    // This works because we know that the user is blocked on some syscall,
+                    // so running the syscall is on us and we shouldn't count this time
+                    // towards the user timeout. When we allow more concurrency, we
+                    // may have to rework this.
+                    // NOTE: Even though we release the permit, the syscall does in v8.
+                    // It is better if we run it in tokio to avoid oversubscribing the CPU.
+                    // TODO: Consider running the async call from a tokio thread.
+                    // Even though the future would be blocking on the database most of the
+                    // time it still does some processing that might result in oversubscribing
+                    // the CPU threads dedicated to v8.
+                    timeout
+                        .with_release_permit_regainable(reason, async |paused_timeout| {
                             let run_udf = RunUdf {
                                 rt: &rt,
                                 v8_scope: scope,
@@ -1211,10 +1282,6 @@ where
                             } else {
                                 Either::Right(run_udf)
                             };
-                            let explain_start = explanations
-                                .as_ref()
-                                .and_then(|spans| spans.iter().flatten().next())
-                                .map(|span| span.start_ms());
                             let results = select! {
                                 biased;
                                 _ = &mut cancellation => {
@@ -1225,22 +1292,11 @@ where
                                     .run_async_syscall_batch(batch, udf_callback)
                                 => anyhow::Ok(results),
                             }?;
-                            if let Some(explanations) = explanations {
-                                for (explain, result) in explanations.into_iter().zip(&results) {
-                                    if let Some(explain) = explain {
-                                        explain.finish(
-                                            explain_start.unwrap_or_default(),
-                                            result.is_ok(),
-                                            common::explain::SyscallTiming::AsyncBatch,
-                                            None,
-                                        );
-                                    }
-                                }
-                            }
+                            finish_batch_explanations(explanations, explain_start, &results);
                             Ok(results)
-                        },
-                    )
-                    .await?;
+                        })
+                        .await?
+                };
                 (resolvers, results)
             };
             // Every syscall must have a result (which could be an error or None).

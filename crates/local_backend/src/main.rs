@@ -56,6 +56,39 @@ use tokio::{
     sync::oneshot,
 };
 
+/// jemalloc, as in Convex's cloud binaries. Under load, glibc's malloc and
+/// free took over a quarter of this backend's CPU samples; the unprefixed
+/// build also serves V8 and the other C code.
+#[cfg(target_os = "linux")]
+#[global_allocator]
+static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
+/// Return freed memory to the OS from jemalloc's own threads, off the request
+/// path: as fast or faster under every measured load, for ~5% more resident
+/// memory. `MALLOC_CONF` still overrides it.
+#[cfg(target_os = "linux")]
+#[allow(non_upper_case_globals)]
+#[unsafe(export_name = "malloc_conf")]
+pub static malloc_conf: &[u8] = b"background_thread:true\0";
+
+/// Resolves on SIGINT or SIGTERM. In its container the backend runs as PID 1,
+/// where the kernel drops any signal without a handler: without this,
+/// `docker stop` sends SIGTERM into the void and SIGKILLs the backend 10 s
+/// later, with no request drain and no worker shutdown.
+#[cfg(unix)]
+async fn shutdown_requested() -> std::io::Result<&'static str> {
+    let mut terminate = signal::unix::signal(signal::unix::SignalKind::terminate())?;
+    futures::select! {
+        r = signal::ctrl_c().fuse() => r.map(|()| "SIGINT"),
+        _ = terminate.recv().fuse() => Ok("SIGTERM"),
+    }
+}
+
+#[cfg(not(unix))]
+async fn shutdown_requested() -> std::io::Result<&'static str> {
+    signal::ctrl_c().await.map(|()| "Ctrl-C")
+}
+
 fn main() -> Result<(), MainError> {
     let config = LocalConfig::parse();
     if let Some(subcommand) = &config.subcommand {
@@ -208,9 +241,8 @@ async fn run_server_inner(runtime: ProdRuntime, config: LocalConfig) -> anyhow::
             force_exit_duration = Some(Duration::from_secs(0));
             let _: Result<_, _> = shutdown_tx.broadcast(()).await;
         }
-        r = signal::ctrl_c().fuse() => {
-            tracing::info!("Received Ctrl-C signal!");
-            r?;
+        r = shutdown_requested().fuse() => {
+            tracing::info!("Received {} signal!", r?);
             let _: Result<_, _> = shutdown_tx.broadcast(()).await;
         },
     }
@@ -251,8 +283,8 @@ async fn run_server_inner(runtime: ProdRuntime, config: LocalConfig) -> anyhow::
                 tracing::info!("Cool down expired. Shutting down");
                 break;
             }
-            // Forcibly shutdown with second ctrl-c.
-            r = signal::ctrl_c().fuse() => {
+            // Forcibly shutdown with a second signal.
+            r = shutdown_requested().fuse() => {
                 r?;
                 tracing::warn!("Forcibly shutting down!");
                 break;

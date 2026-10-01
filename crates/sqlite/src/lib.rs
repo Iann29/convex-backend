@@ -27,6 +27,10 @@ use common::{
         Interval,
         StartIncluded,
     },
+    knobs::{
+        SQLITE_JOURNAL_MODE,
+        SQLITE_SYNCHRONOUS,
+    },
     persistence::{
         row_index_retention::{
             delete_expired_entries,
@@ -58,7 +62,6 @@ use common::{
         Timestamp,
     },
     value::{
-        ConvexValue,
         InternalDocumentId,
         TabletId,
     },
@@ -75,6 +78,7 @@ use rusqlite::{
     params,
     types::Null,
     Connection,
+    OptionalExtension as _,
     Row,
     ToSql,
 };
@@ -169,12 +173,53 @@ impl SqlitePersistence {
     }
 
     pub fn new(path: &str) -> anyhow::Result<Self> {
+        Self::with_journal(path, &SQLITE_JOURNAL_MODE, &SQLITE_SYNCHRONOUS)
+    }
+
+    /// Open `path` with an explicit journal (`wal` | `delete`) and
+    /// `synchronous` level (`full` | `normal`).
+    pub fn with_journal(path: &str, journal: &str, synchronous: &str) -> anyhow::Result<Self> {
+        let journal = match journal {
+            "wal" => "WAL",
+            "delete" => "DELETE",
+            other => {
+                anyhow::bail!("CONVEX_SQLITE_JOURNAL_MODE must be wal or delete, got {other:?}")
+            },
+        };
+        let synchronous = match synchronous {
+            "full" => "FULL",
+            // In the rollback journal, NORMAL can corrupt the file on power
+            // loss; in WAL it can only drop the last commits.
+            "normal" if journal == "WAL" => "NORMAL",
+            "normal" => anyhow::bail!("CONVEX_SQLITE_SYNCHRONOUS=normal requires the wal journal"),
+            other => {
+                anyhow::bail!("CONVEX_SQLITE_SYNCHRONOUS must be full or normal, got {other:?}")
+            },
+        };
         let newly_created = !Path::new(path).exists();
         let connection = Connection::open(path)?;
+        // The journal is switched first: it needs the only connection to the
+        // file. `:memory:` stays in `memory`.
+        let mode: String =
+            connection.pragma_update_and_check(None, "journal_mode", journal, |row| row.get(0))?;
+        let wal = mode.eq_ignore_ascii_case("wal");
+        if !mode.eq_ignore_ascii_case(journal) && path != ":memory:" {
+            tracing::warn!("SQLite at {path} kept journal {mode} instead of {journal}");
+        }
+        connection.pragma_update(None, "synchronous", synchronous)?;
+        if wal {
+            // Bound the WAL a checkpoint leaves behind.
+            connection.pragma_update(None, "journal_size_limit", 64 * 1024 * 1024)?;
+        }
         // Execute create tables unconditionally since they are idempotent.
         connection.execute_batch(DOCUMENTS_INIT)?;
         connection.execute_batch(INDEXES_INIT)?;
         connection.execute_batch(PERSISTENCE_GLOBALS_INIT)?;
+        if wal {
+            // Start from an empty WAL, e.g. after a crash left one behind.
+            connection.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
+        }
+        tracing::info!("SQLite at {path}: journal {mode}, synchronous {synchronous}");
         Ok(Self {
             inner: Arc::new(Mutex::new(Inner { connection })),
             access: Arc::new(Semaphore::new(1)),
@@ -195,47 +240,22 @@ impl SqlitePersistence {
         cursor: Option<&(u64, Vec<u8>, Vec<u8>)>,
     ) -> anyhow::Result<Vec<DocumentLogEntry>> {
         let mut params: Vec<&dyn ToSql> = vec![];
-        let cursor_bound = match cursor {
-            Some((ts, table_id, id)) => {
-                params.push(ts);
-                params.push(table_id);
-                params.push(id);
-                match order {
-                    Order::Asc => {
-                        " AND (ts > $1 OR (ts = $1 AND (table_id > $2 OR (table_id = $2 AND id > \
-                         $3))))"
-                    },
-                    Order::Desc => {
-                        " AND (ts < $1 OR (ts = $1 AND (table_id < $2 OR (table_id = $2 AND id < \
-                         $3))))"
-                    },
-                }
-            },
-            None => "",
-        };
+        if let Some((ts, table_id, id)) = cursor {
+            params.push(ts);
+            params.push(table_id);
+            params.push(id);
+        }
         let tablet_id_bytes = tablet_id.map(|tablet_id| tablet_id.0);
         let tablet_id_slice = tablet_id_bytes.as_ref().map(|tablet_id| &tablet_id[..]);
-        let tablet_filter = match tablet_id_slice {
-            Some(ref tablet_id) => {
-                params.push(tablet_id);
-                format!(" AND table_id = ${}", params.len())
-            },
-            None => String::new(),
-        };
-        let order_str = match order {
-            Order::Asc => "ASC",
-            Order::Desc => "DESC",
-        };
-        let query = format!(
-            r#"
-SELECT id, ts, table_id, json_value, deleted, prev_ts
-FROM documents
-WHERE ts >= {min} AND ts < {max}{cursor_bound}{tablet_filter}
-ORDER BY ts {order_str}, table_id {order_str}, id {order_str}
-LIMIT {page_size}
-"#,
-            min = range.min_timestamp_inclusive(),
-            max = range.max_timestamp_exclusive(),
+        if let Some(ref tablet_id) = tablet_id_slice {
+            params.push(tablet_id);
+        }
+        let query = load_documents_sql(
+            order,
+            cursor.is_some(),
+            tablet_id.is_some(),
+            range,
+            page_size,
         );
         self.with_connection("load_documents", |connection| {
             let mut stmt = connection.prepare(&query)?;
@@ -296,23 +316,45 @@ LIMIT {page_size}
         }
     }
 
-    /// Read one page of an index scan, at most `batch_size` keys, resuming
-    /// after `cursor` (the last key the previous page scanned, in scan
-    /// order). Tombstoned keys are returned as `(key, None)`: they must
-    /// still advance the cursor, but must not be emitted to the caller.
+    /// Read one page of an index scan: at most `batch_size` index rows,
+    /// resuming after `cursor` (the last key the previous page returned, in
+    /// scan order). Returns the latest visible revision of each key the page
+    /// completed — tombstones as `(key, None)`, which still advance the cursor
+    /// but are not emitted — and whether the interval is exhausted.
+    ///
+    /// Rows come back in primary-key order, `(key, ts)` ascending or both
+    /// descending, so no sort is ever materialized. Picking the latest
+    /// revision per key here, instead of a correlated `MAX(ts)` subquery per
+    /// row, halves the work of the scan. Descending, the first row of a key is
+    /// its latest revision. Ascending it is the last, so a full page's last
+    /// key may be cut short and is left for the next page, unless it is the
+    /// only key on the page.
     fn _index_scan_page(
         &self,
         index_id: IndexId,
-        tablet_id: TabletId,
         read_timestamp: Timestamp,
         interval: &Interval,
         order: Order,
         batch_size: usize,
         cursor: Option<&IndexKeyBytes>,
-    ) -> anyhow::Result<Vec<(IndexKeyBytes, Option<LatestDocument>)>> {
+    ) -> anyhow::Result<(Vec<IndexRevision>, bool)> {
         let interval = interval.clone();
         let index_id = &index_id.0[..];
         let read_timestamp: u64 = read_timestamp.into();
+        if let Some(key) = interval.is_singleton() {
+            // A point read — every `db.get` — is one primary-key lookup of the
+            // key's latest revision, whatever the page size or order.
+            return self.with_connection("index_scan", |connection| {
+                let revision = connection
+                    .query_row(
+                        LATEST_REVISION_QUERY,
+                        params![index_id, read_timestamp, &key[..]],
+                        index_revision,
+                    )
+                    .optional()?;
+                Ok((revision.into_iter().collect(), true))
+            });
+        }
 
         let mut params = params![index_id, read_timestamp].to_vec();
 
@@ -342,76 +384,61 @@ LIMIT {page_size}
             },
             None => String::new(),
         };
-        let order = match order {
+        let direction = match order {
             Order::Asc => "ASC",
             Order::Desc => "DESC",
         };
-        // Walk keys in PK order and select the last visible revision per key.
-        // Keep tombstones in the page so a deleted page still advances the cursor.
         let query = format!(
             r#"
 SELECT B.key, B.ts, B.document_id, C.table_id, C.json_value, C.prev_ts, B.deleted
 FROM indexes B
 LEFT JOIN documents C
 ON B.ts = C.ts AND B.table_id = C.table_id AND B.document_id = C.id
-WHERE B.index_id = $1
-AND B.ts = (
-    SELECT MAX(X.ts) FROM indexes X
-    WHERE X.index_id = B.index_id AND X.key = B.key AND X.ts <= $2
-){lower}{upper}
-ORDER BY B.key {order}
+WHERE B.index_id = $1 AND B.ts <= $2{lower}{upper}
+ORDER BY B.key {direction}, B.ts {direction}
 LIMIT {batch_size}
 "#,
         );
 
         self.with_connection("index_scan", |connection| {
             let mut stmt = connection.prepare(&query)?;
-            let row_iter = stmt.query_map(&params[..], |row| {
-                let key = IndexKeyBytes(row.get::<_, Vec<u8>>(0)?);
-                let ts =
-                    Timestamp::try_from(row.get::<_, u64>(1)?).expect("timestamp out of bounds");
-                let document_id: Option<Vec<u8>> = row.get(2)?;
-                let table: Option<Vec<u8>> = row.get(3)?;
-                let json_value: Option<String> = row.get(4)?;
-                let prev_ts: Option<Timestamp> = row
-                    .get::<_, Option<u64>>(5)?
-                    .map(|ts| Timestamp::try_from(ts).expect("prev_ts out of bounds"));
-                let deleted = row.get::<_, u32>(6)? != 0;
-
-                Ok((key, ts, document_id, table, json_value, prev_ts, deleted))
-            })?;
-            let mut page = vec![];
-            for row in row_iter {
-                let (key, ts, document_id, table, json_value, prev_ts, deleted) = row?;
-                if deleted {
-                    page.push((key, None));
-                    continue;
+            let rows = stmt
+                .query_map(&params[..], index_revision)?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let exhausted = rows.len() < batch_size;
+            let mut latest: Vec<IndexRevision> = Vec::new();
+            for row in rows {
+                match latest.last_mut() {
+                    Some(last) if last.key == row.key => {
+                        if order == Order::Asc {
+                            *last = row;
+                        }
+                    },
+                    _ => latest.push(row),
                 }
-                let table = table.ok_or_else(|| {
-                    anyhow::anyhow!("Dangling index reference for {:?} {:?}", key, ts)
-                })?;
-                let table = TabletId(table.try_into()?);
-                let document_id = document_id.ok_or_else(|| {
-                    anyhow::anyhow!("Dangling index reference for {:?} {:?}", key, ts)
-                })?;
-                let _document_id =
-                    InternalDocumentId::new(table, InternalId::try_from(document_id)?);
-                let json_value = json_value.ok_or_else(|| {
-                    anyhow::anyhow!("Index reference to deleted document {:?} {:?}", key, ts)
-                })?;
-                let json_value: serde_json::Value = serde_json::from_str(&json_value)?;
-                let value: ConvexValue = json_value.try_into()?;
-                let document = ResolvedDocument::from_database(tablet_id, value)?;
-                page.push((
-                    key,
-                    Some(LatestDocument {
-                        ts,
-                        value: document,
-                        prev_ts,
-                    }),
-                ));
             }
-            Ok(page)
+            if order == Order::Asc && !exhausted {
+                let cut = latest.pop().expect("a full page has rows");
+                if latest.is_empty() {
+                    // One key filled the page: settle it with a point lookup.
+                    let revision = connection
+                        .query_row(
+                            LATEST_REVISION_QUERY,
+                            params![index_id, read_timestamp, &cut.key[..]],
+                            index_revision,
+                        )
+                        .optional()?;
+                    // Only retention can have removed the key since the page
+                    // read it, and snapshot validation reports that; skip it
+                    // as a tombstone so the cursor advances.
+                    latest.push(revision.unwrap_or(IndexRevision {
+                        deleted: true,
+                        json_value: None,
+                        ..cut
+                    }));
+                }
+            }
+            Ok((latest, exhausted))
         })
     }
 
@@ -437,7 +464,6 @@ LIMIT {batch_size}
                 .run("index_scan", || {
                     self._index_scan_page(
                         index_id,
-                        tablet_id,
                         read_timestamp,
                         &interval,
                         order,
@@ -446,17 +472,18 @@ LIMIT {batch_size}
                     )
                 })
                 .await?;
-            let page_len = page.len();
+            let (page, exhausted) = page;
             retention_validator
                 .validate_snapshot(read_timestamp)
                 .await?;
-            for (key, doc) in page {
+            for revision in page {
+                let (key, doc) = revision.into_latest(tablet_id)?;
                 cursor = Some(key.clone());
                 if let Some(doc) = doc {
                     yield (key, doc);
                 }
             }
-            if page_len < batch_size {
+            if exhausted {
                 break;
             }
         }
@@ -887,6 +914,114 @@ CREATE TABLE IF NOT EXISTS persistence_globals (
 );
 "#;
 
+/// The documents-log page query: `(ts, table_id, id)` cursor as `$1..$3`,
+/// then the table filter. The filter is written `+table_id`: as a plain
+/// column SQLite answers it from `documents_by_table_and_id` and sorts every
+/// revision of the table in a temp b-tree on each page; unary `+` keeps the
+/// primary-key scan, which is already in `(ts, table_id, id)` order.
+fn load_documents_sql(
+    order: Order,
+    has_cursor: bool,
+    has_tablet: bool,
+    range: TimestampRange,
+    page_size: usize,
+) -> String {
+    let min = range.min_timestamp_inclusive();
+    let max = range.max_timestamp_exclusive();
+    // One bound per side of `ts`: with a cursor it replaces the range bound
+    // on its side (it is always inside the range), so the seek starts at the
+    // cursor whatever the planner prefers.
+    let bounds = match (has_cursor, order) {
+        (false, _) => format!("ts >= {min} AND ts < {max}"),
+        (true, Order::Asc) => format!(
+            "ts >= $1 AND ts < {max} AND (ts > $1 OR (ts = $1 AND (table_id > $2 OR (table_id = \
+             $2 AND id > $3))))"
+        ),
+        (true, Order::Desc) => format!(
+            "ts <= $1 AND ts >= {min} AND (ts < $1 OR (ts = $1 AND (table_id < $2 OR (table_id = \
+             $2 AND id < $3))))"
+        ),
+    };
+    let tablet_filter = if has_tablet {
+        format!(" AND +table_id = ${}", if has_cursor { 4 } else { 1 })
+    } else {
+        String::new()
+    };
+    let order_str = match order {
+        Order::Asc => "ASC",
+        Order::Desc => "DESC",
+    };
+    format!(
+        r#"
+SELECT id, ts, table_id, json_value, deleted, prev_ts
+FROM documents
+WHERE {bounds}{tablet_filter}
+ORDER BY ts {order_str}, table_id {order_str}, id {order_str}
+LIMIT {page_size}
+"#
+    )
+}
+
+/// One index row with its document, as the scan query returns it.
+struct IndexRevision {
+    key: Vec<u8>,
+    ts: Timestamp,
+    document_id: Option<Vec<u8>>,
+    table: Option<Vec<u8>>,
+    json_value: Option<String>,
+    prev_ts: Option<Timestamp>,
+    deleted: bool,
+}
+
+fn index_revision(row: &Row<'_>) -> rusqlite::Result<IndexRevision> {
+    Ok(IndexRevision {
+        key: row.get(0)?,
+        ts: Timestamp::try_from(row.get::<_, u64>(1)?).expect("timestamp out of bounds"),
+        document_id: row.get(2)?,
+        table: row.get(3)?,
+        json_value: row.get(4)?,
+        prev_ts: row
+            .get::<_, Option<u64>>(5)?
+            .map(|ts| Timestamp::try_from(ts).expect("prev_ts out of bounds")),
+        deleted: row.get::<_, u32>(6)? != 0,
+    })
+}
+
+impl IndexRevision {
+    /// The key and, unless it is a tombstone, the document it points to.
+    fn into_latest(
+        self,
+        tablet_id: TabletId,
+    ) -> anyhow::Result<(IndexKeyBytes, Option<LatestDocument>)> {
+        let key = IndexKeyBytes(self.key);
+        let ts = self.ts;
+        if self.deleted {
+            return Ok((key, None));
+        }
+        let table = self
+            .table
+            .ok_or_else(|| anyhow::anyhow!("Dangling index reference for {:?} {:?}", key, ts))?;
+        let table = TabletId(table.try_into()?);
+        let document_id = self
+            .document_id
+            .ok_or_else(|| anyhow::anyhow!("Dangling index reference for {:?} {:?}", key, ts))?;
+        let _document_id = InternalDocumentId::new(table, InternalId::try_from(document_id)?);
+        let json_value = self.json_value.ok_or_else(|| {
+            anyhow::anyhow!("Index reference to deleted document {:?} {:?}", key, ts)
+        })?;
+        let value = common::value::json_deserialize(&json_value)?;
+        let document = ResolvedDocument::from_database(tablet_id, value)?;
+        Ok((
+            key,
+            Some(LatestDocument {
+                ts,
+                value: document,
+                prev_ts: self.prev_ts,
+            }),
+        ))
+    }
+}
+
 fn row_to_document(
     row: rusqlite::Result<(Vec<u8>, u64, Vec<u8>, Option<String>, bool, Option<u64>)>,
 ) -> anyhow::Result<(
@@ -903,8 +1038,7 @@ fn row_to_document(
     let document = if !deleted {
         let json_value = json_value
             .ok_or_else(|| anyhow::anyhow!("Unexpected NULL json_value at {} {}", id, prev_ts))?;
-        let json_value: serde_json::Value = serde_json::from_str(&json_value)?;
-        let value: ConvexValue = json_value.try_into()?;
+        let value = common::value::json_deserialize(&json_value)?;
         Some(ResolvedDocument::from_database(table, value)?)
     } else {
         None
@@ -943,6 +1077,18 @@ const DELETE_DOCUMENT: &str = "DELETE FROM documents WHERE table_id = ? AND id =
 
 const DELETE_TABLE_DOCUMENTS: &str = "DELETE FROM documents WHERE table_id = ? AND id IN (SELECT \
                                       id FROM documents WHERE table_id = ? LIMIT ?)";
+
+/// The latest revision of one index key at a read timestamp. `$N` names bind
+/// in order of first appearance, so they must appear in order.
+const LATEST_REVISION_QUERY: &str = r#"
+SELECT B.key, B.ts, B.document_id, C.table_id, C.json_value, C.prev_ts, B.deleted
+FROM indexes B
+LEFT JOIN documents C
+ON B.ts = C.ts AND B.table_id = C.table_id AND B.document_id = C.id
+WHERE B.index_id = $1 AND B.ts <= $2 AND B.key = $3
+ORDER BY B.ts DESC
+LIMIT 1
+"#;
 
 const PREV_REV_QUERY: &str = r#"
 SELECT id, ts, table_id, json_value, deleted, prev_ts
@@ -1371,6 +1517,189 @@ mod tests {
             assert_eq!(expected.len(), 20);
             let got = run_scan(&fixture, 25, &interval, order, 5).await?;
             assert_eq!(got, expected, "tombstone run must not end the scan early");
+        }
+        Ok(())
+    }
+
+    /// Keys with many more revisions than a page holds, interleaved with
+    /// single-revision keys and tombstones: every page boundary lands inside
+    /// a key's history, in both orders, at read timestamps that cut the
+    /// histories at different points.
+    #[tokio::test]
+    async fn revision_runs_longer_than_a_page() -> anyhow::Result<()> {
+        let specs: Vec<KeySpec> = (0u8..12)
+            .map(|k| {
+                let versions = if k % 3 == 0 {
+                    (1..=11u64)
+                        .map(|v| (v * 10, (v % 4 != 0).then_some(v as i64)))
+                        .collect()
+                } else {
+                    vec![(5 + u64::from(k), Some(i64::from(k)))]
+                };
+                KeySpec {
+                    key: vec![k],
+                    doc_n: k,
+                    versions,
+                }
+            })
+            .collect();
+        let fixture = make_fixture(&specs).await?;
+        let intervals = [
+            make_interval(vec![], None),
+            make_interval(vec![2], Some(vec![10])),
+        ];
+        for read_ts in [9, 35, 40, 75, 200] {
+            for interval in &intervals {
+                for order in [Order::Asc, Order::Desc] {
+                    let expected = expected_scan(&fixture, &specs, read_ts, interval, order)?;
+                    for size_hint in [1, 2, 3, 4, 7, 100] {
+                        let got = run_scan(&fixture, read_ts, interval, order, size_hint).await?;
+                        assert_eq!(
+                            got, expected,
+                            "read_ts={read_ts} order={order:?} size_hint={size_hint}"
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// A file written in the rollback journal switches to WAL on open and
+    /// back to `delete` on request, keeping its data both ways; the mode is
+    /// persistent in the file, so any other SQLite reopens it the same way.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn journal_mode_switches_both_ways_and_keeps_data() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("db.sqlite3");
+        let path = path.to_str().unwrap();
+        let file_mode = || -> anyhow::Result<String> {
+            Ok(rusqlite::Connection::open(path)?
+                .query_row("PRAGMA journal_mode", [], |row| row.get(0))?)
+        };
+        let specs: Vec<LogEntrySpec> = (0u8..20)
+            .map(|doc_n| LogEntrySpec {
+                ts: 10 + u64::from(doc_n),
+                tablet_n: 1,
+                doc_n,
+                value: Some(i64::from(doc_n)),
+            })
+            .collect();
+        let entries = specs
+            .iter()
+            .map(log_entry)
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let (before, after) = entries.split_at(10);
+
+        let legacy = SqlitePersistence::with_journal(path, "delete", "full")?;
+        legacy.write(before, &[], ConflictStrategy::Error).await?;
+        drop(legacy);
+        assert_eq!(file_mode()?, "delete");
+
+        let wal = SqlitePersistence::with_journal(path, "wal", "full")?;
+        assert_eq!(
+            run_load(&wal, TimestampRange::all(), Order::Asc, 7).await?,
+            before
+        );
+        wal.write(after, &[], ConflictStrategy::Error).await?;
+        drop(wal);
+        assert_eq!(file_mode()?, "wal");
+
+        let back = SqlitePersistence::with_journal(path, "delete", "full")?;
+        assert_eq!(
+            run_load(&back, TimestampRange::all(), Order::Asc, 7).await?,
+            entries
+        );
+        drop(back);
+        assert_eq!(file_mode()?, "delete");
+        Ok(())
+    }
+
+    /// No page query may sort: every shape of the documents-log query and
+    /// both index-scan orders must stream from an index. A temp b-tree here
+    /// sorts the whole range (every revision of a table) on every page.
+    #[test]
+    fn page_queries_never_sort() -> anyhow::Result<()> {
+        let persistence = SqlitePersistence::new(":memory:")?;
+        let range = TimestampRange::all();
+        let mut shapes = vec![];
+        for order in [Order::Asc, Order::Desc] {
+            for has_cursor in [false, true] {
+                for has_tablet in [false, true] {
+                    let params = usize::from(has_cursor) * 3 + usize::from(has_tablet);
+                    let sql = super::load_documents_sql(order, has_cursor, has_tablet, range, 100);
+                    shapes.push((
+                        format!("load {order:?} cursor={has_cursor} table={has_tablet}"),
+                        sql,
+                        params,
+                    ));
+                }
+            }
+            let direction = if order == Order::Asc { "ASC" } else { "DESC" };
+            shapes.push((
+                format!("index scan {order:?}"),
+                format!(
+                    "SELECT B.key, B.ts, B.document_id, C.table_id, C.json_value, C.prev_ts, \
+                     B.deleted FROM indexes B LEFT JOIN documents C ON B.ts = C.ts AND B.table_id \
+                     = C.table_id AND B.document_id = C.id WHERE B.index_id = $1 AND B.ts <= $2 \
+                     AND B.key > $3 AND B.key < $4 ORDER BY B.key {direction}, B.ts {direction} \
+                     LIMIT 100"
+                ),
+                4,
+            ));
+        }
+        for (label, sql, params) in shapes {
+            let plan: Vec<String> = persistence.with_connection("test", |connection| {
+                let mut stmt = connection.prepare(&format!("EXPLAIN QUERY PLAN {sql}"))?;
+                let nulls = vec![rusqlite::types::Null; params];
+                let rows = stmt
+                    .query_map(rusqlite::params_from_iter(nulls.iter()), |row| row.get(3))?
+                    .collect::<rusqlite::Result<Vec<String>>>()?;
+                Ok(rows)
+            })?;
+            assert!(
+                plan.iter().all(|step| !step.contains("TEMP B-TREE")),
+                "{label} sorts: {plan:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn unknown_journal_or_synchronous_is_refused() {
+        assert!(SqlitePersistence::with_journal(":memory:", "off", "full").is_err());
+        assert!(SqlitePersistence::with_journal(":memory:", "wal", "off").is_err());
+        assert!(SqlitePersistence::with_journal(":memory:", "wal", "normal").is_ok());
+        // NORMAL in the rollback journal can corrupt the file on power loss.
+        assert!(SqlitePersistence::with_journal(":memory:", "delete", "normal").is_err());
+    }
+
+    /// Point reads (a singleton interval, as `db.get` issues) return each
+    /// key's latest revision at the read timestamp, including across long
+    /// histories and tombstones, whatever the order and page size.
+    #[tokio::test]
+    async fn point_reads_take_the_latest_revision() -> anyhow::Result<()> {
+        let specs: Vec<KeySpec> = (0u8..6)
+            .map(|k| KeySpec {
+                key: vec![k],
+                doc_n: k,
+                versions: (1..=9u64)
+                    .map(|v| (v * 10, (v % 3 != 0).then_some(v as i64)))
+                    .collect(),
+            })
+            .collect();
+        let fixture = make_fixture(&specs).await?;
+        for k in [0u8, 3, 5, 9] {
+            let interval = Interval::singleton(BinaryKey::from(vec![k]));
+            for read_ts in [5, 10, 25, 30, 35, 90, 200] {
+                for order in [Order::Asc, Order::Desc] {
+                    let expected = expected_scan(&fixture, &specs, read_ts, &interval, order)?;
+                    for size_hint in [1, 2, 100] {
+                        let got = run_scan(&fixture, read_ts, &interval, order, size_hint).await?;
+                        assert_eq!(got, expected, "key={k} read_ts={read_ts} order={order:?}");
+                    }
+                }
+            }
         }
         Ok(())
     }

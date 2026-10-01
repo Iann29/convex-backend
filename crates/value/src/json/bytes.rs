@@ -11,6 +11,11 @@ impl JsonBytes {
 
     /// Decode a binary string from a string.
     pub fn decode(s: String) -> anyhow::Result<ConvexBytes> {
+        Self::decode_str(&s)
+    }
+
+    /// Decode from a borrowed string (same rules as [`Self::decode`]).
+    pub(crate) fn decode_str(s: &str) -> anyhow::Result<ConvexBytes> {
         ConvexBytes::try_from(base64::decode(s.as_bytes())?)
     }
 }

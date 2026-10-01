@@ -11,6 +11,11 @@ impl JsonInteger {
 
     /// Decode an integer from a string.
     pub fn decode(s: String) -> anyhow::Result<i64> {
+        Self::decode_str(&s)
+    }
+
+    /// Decode from a borrowed string (same rules as [`Self::decode`]).
+    pub(crate) fn decode_str(s: &str) -> anyhow::Result<i64> {
         let bytes: [u8; 8] = base64::decode(s.as_bytes())?
             .try_into()
             .map_err(|_| anyhow!("Int64 must be exactly eight bytes"))?;

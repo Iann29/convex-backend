@@ -1,7 +1,7 @@
 [workspace]
 members = [ "crates/*", "crates/convex/sync_types" ]
 resolver = "2"
-exclude = [ "crates/py_client", "crates/python_client_tests" ]
+exclude = [ "crates/py_client", "crates/python_client_tests", "crates_vendor" ]
 
 [workspace.dependencies]
 aes = { version = "0.8.4" }
@@ -252,6 +252,8 @@ tracing-subscriber = { version = "0.3.17", features = [ "env-filter", "json" ] }
 tracy-client = { version = "0.18.0", default-features = false, features = [ "fibers" ] }
 tungstenite = { version = "0.28.0", features = [ "url", "deflate" ], git = "https://github.com/danielsufrindisler/tungstenite-rs", rev = "eda0a0c5c15334feca45aec64af90fded2917cb7" }
 tuple_struct = { path = "crates/tuple_struct" }
+turso_core = "0.8.1"
+turso_persistence = { path = "crates/turso_persistence" }
 udf = { path = "crates/udf" }
 udf_metrics = { path = "crates/udf_metrics" }
 url = "2.5.4"
@@ -286,6 +288,8 @@ validator_derive = { git = "https://github.com/Keats/validator", rev = "598ad830
 tikv-jemalloc-sys = { git = "https://github.com/get-convex/jemallocator", rev = "d6f82852479c9962239a634688e60a3d1e873ffb" }
 shuttle = { git = "https://github.com/awslabs/shuttle", rev = "91e3cae8f73c2be3934960c46f8494a7ca981867" }
 shuttle-parking_lot = { git = "https://github.com/awslabs/shuttle", rev = "91e3cae8f73c2be3934960c46f8494a7ca981867" }
+# Lab: turso_core 0.8.1 with granular page-cache invalidation (C8g).
+turso_core = { path = "crates_vendor/turso_core" }
 
 [workspace.lints.rust]
 unused_extern_crates = "warn"
