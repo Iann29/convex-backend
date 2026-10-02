@@ -138,7 +138,10 @@ pub use self::{
     },
 };
 use self::{
-    phase::ActionPhase,
+    phase::{
+        ActionPhase,
+        ActionResources,
+    },
     task::{
         TaskId,
         TaskRequest,
@@ -289,7 +292,7 @@ impl<RT: Runtime> ActionEnvironment<RT> {
         let explain_trace = common::explain::TraceHandle::lookup(&context);
         let syscall_trace = Arc::new(Mutex::new(SyscallTrace::new()));
         let (task_retval_sender, task_responses) = mpsc::unbounded_channel();
-        let resources = Arc::new(Mutex::new(BTreeMap::new()));
+        let resources = Arc::new(Mutex::new(ActionResources::default()));
         let convex_origin_override = Arc::new(Mutex::new(None));
         let http_action_route = Arc::new(OnceLock::new());
         let task_executor = TaskExecutor {

@@ -312,6 +312,11 @@ enum RangeFetchResult {
 }
 
 impl DatabaseIndexSnapshot {
+    /// See [`InMemoryIndexes::last_modified`].
+    pub fn in_memory_last_modified(&self, index_id: IndexId) -> Option<Timestamp> {
+        self.in_memory_indexes.last_modified(index_id)
+    }
+
     pub fn new(
         index_registry: IndexRegistry,
         in_memory_indexes: Arc<dyn InMemoryIndexes>,

@@ -79,6 +79,13 @@ pub trait InMemoryIndexes: Send + Sync {
         tablet_id: TabletId,
         table_name: TableName,
     ) -> anyhow::Result<Option<Vec<(IndexKeyBytes, Timestamp, MemoryDocument)>>>;
+
+    /// When the in-memory index `index_id` was last written, as of this
+    /// snapshot: two snapshots that answer the same see the same index
+    /// contents. `None` if unknown or not an in-memory index.
+    fn last_modified(&self, _index_id: IndexId) -> Option<Timestamp> {
+        None
+    }
 }
 
 /// [`BackendInMemoryIndexes`] maintains in-memory database indexes. With the
@@ -102,6 +109,12 @@ impl InMemoryIndexes for BackendInMemoryIndexes {
         _table_name: TableName,
     ) -> anyhow::Result<Option<Vec<(IndexKeyBytes, Timestamp, MemoryDocument)>>> {
         self.range(index_id, interval, order)
+    }
+
+    fn last_modified(&self, index_id: IndexId) -> Option<Timestamp> {
+        self.in_memory_indexes
+            .get(&index_id)
+            .map(|index| index.last_modified)
     }
 }
 
@@ -367,7 +380,6 @@ impl BackendInMemoryIndexes {
             .get(&index_id)
             .map(|index_map| order.apply(index_map.range(interval)).collect()))
     }
-
 }
 
 /// Implementor of `InMemoryIndexes` if no indexes are available in-memory.

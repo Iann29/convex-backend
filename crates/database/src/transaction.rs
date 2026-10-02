@@ -411,6 +411,17 @@ impl<RT: Runtime> Transaction<RT> {
         self.index.index_registry()
     }
 
+    /// When the in-memory index `index_id` was last written as of this
+    /// transaction's snapshot: two transactions that get the same answer see
+    /// the same contents in that index. `None` if unknown, not an in-memory
+    /// index, or written by this transaction.
+    pub fn in_memory_index_last_modified(
+        &self,
+        index_id: common::types::IndexId,
+    ) -> Option<common::types::Timestamp> {
+        self.index.in_memory_last_modified(index_id)
+    }
+
     pub fn is_readonly(&self) -> bool {
         self.writes.is_empty()
     }

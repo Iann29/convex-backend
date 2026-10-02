@@ -288,9 +288,11 @@ impl<RT: Runtime> UdfPhase<RT> {
                         // Load all modules from the latest source package, but don't
                         // record a read dependency on all the modules and their source
                         // packages.
-                        SourcePackageModel::new(&mut snapshot_tx, component.into())
-                            .get_latest()
-                            .await?
+                        crate::environment::component_cache::latest_source_package(
+                            &mut snapshot_tx,
+                            component,
+                        )
+                        .await?
                     };
 
                 Ok(UdfPreloaded::Ready {

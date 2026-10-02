@@ -108,6 +108,16 @@ pub struct TransactionIndex {
 impl PendingWrites for TransactionIndex {}
 
 impl TransactionIndex {
+    /// When the in-memory index `index_id` was last written as of this
+    /// transaction's snapshot, if the transaction itself has not written it.
+    pub fn in_memory_last_modified(&self, index_id: IndexId) -> Option<common::types::Timestamp> {
+        if self.database_index_updates.contains_key(&index_id) {
+            return None;
+        }
+        self.database_index_snapshot
+            .in_memory_last_modified(index_id)
+    }
+
     pub fn new(
         index_registry: IndexRegistry,
         database_index_snapshot: DatabaseIndexSnapshot,

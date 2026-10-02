@@ -47,6 +47,7 @@ use sync_types::{
 
 use crate::modules::{
     module_versions::Visibility,
+    types::ModuleMetadata,
     ModuleModel,
 };
 
@@ -251,41 +252,29 @@ impl<'a, RT: Runtime> ComponentsModel<'a, RT> {
         &mut self,
         component_id: ComponentId,
     ) -> anyhow::Result<BTreeMap<Reference, Resource>> {
-        let mut m = BootstrapComponentsModel::new(self.tx);
-        let component_type = m.load_component_type(component_id).await?;
-        let component_path = m.must_component_path(component_id)?;
-
-        let mut result = BTreeMap::new();
-
-        if let ComponentType::ChildComponent { ref args, .. } = component_type {
-            for (name, resource) in args {
-                let reference = Reference::ComponentArgument {
-                    attributes: vec![name.clone()],
-                };
-                result.insert(reference, resource.clone());
-            }
-        }
-
+        let component_path =
+            BootstrapComponentsModel::new(self.tx).must_component_path(component_id)?;
         let module_metadata = ModuleModel::new(self.tx)
             .get_application_metadata(component_id)
             .await?;
-        for module in module_metadata {
-            let Some(ref analyze_result) = module.analyze_result else {
-                continue;
-            };
-            for function in &analyze_result.functions {
-                let udf_path =
-                    CanonicalizedUdfPath::new(module.path.clone(), function.name.clone());
-                let function_path = CanonicalizedComponentFunctionPath {
-                    component: component_path.clone(),
-                    udf_path: udf_path.clone(),
-                };
-                result.insert(
-                    Reference::Function(udf_path),
-                    Resource::Function(function_path),
-                );
-            }
-        }
+        let mut result = self
+            .preload_resources_except_functions(component_id)
+            .await?;
+        // The kinds of reference never collide, so the order is free.
+        result.extend(function_resources(
+            &component_path,
+            module_metadata.iter().map(|module| &***module),
+        ));
+        Ok(result)
+    }
+
+    /// What [`Self::preload_resources`] loads besides the component's own
+    /// functions: its arguments and its children's exports.
+    pub async fn preload_resources_except_functions(
+        &mut self,
+        component_id: ComponentId,
+    ) -> anyhow::Result<BTreeMap<Reference, Resource>> {
+        let mut result = self.preload_argument_resources(component_id).await?;
 
         for (component_name, child_component_id) in
             self.component_children_ids(component_id).await?
@@ -301,6 +290,26 @@ impl<'a, RT: Runtime> ComponentsModel<'a, RT> {
             }
         }
 
+        Ok(result)
+    }
+
+    /// References to the component's arguments, as
+    /// [`Self::preload_resources`] gives them.
+    pub async fn preload_argument_resources(
+        &mut self,
+        component_id: ComponentId,
+    ) -> anyhow::Result<BTreeMap<Reference, Resource>> {
+        let mut m = BootstrapComponentsModel::new(self.tx);
+        let component_type = m.load_component_type(component_id).await?;
+        let mut result = BTreeMap::new();
+        if let ComponentType::ChildComponent { ref args, .. } = component_type {
+            for (name, resource) in args {
+                let reference = Reference::ComponentArgument {
+                    attributes: vec![name.clone()],
+                };
+                result.insert(reference, resource.clone());
+            }
+        }
         Ok(result)
     }
 
@@ -369,4 +378,31 @@ impl<'a, RT: Runtime> ComponentsModel<'a, RT> {
 
         Ok(result)
     }
+}
+
+/// References to a component's own functions, as
+/// [`ComponentsModel::preload_resources`] builds them from the component's
+/// (non-system) modules.
+pub fn function_resources<'a>(
+    component_path: &ComponentPath,
+    modules: impl IntoIterator<Item = &'a ModuleMetadata>,
+) -> BTreeMap<Reference, Resource> {
+    let mut result = BTreeMap::new();
+    for module in modules {
+        let Some(ref analyze_result) = module.analyze_result else {
+            continue;
+        };
+        for function in &analyze_result.functions {
+            let udf_path = CanonicalizedUdfPath::new(module.path.clone(), function.name.clone());
+            let function_path = CanonicalizedComponentFunctionPath {
+                component: component_path.clone(),
+                udf_path: udf_path.clone(),
+            };
+            result.insert(
+                Reference::Function(udf_path),
+                Resource::Function(function_path),
+            );
+        }
+    }
+    result
 }

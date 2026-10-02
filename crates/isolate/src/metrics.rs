@@ -582,6 +582,19 @@ pub fn create_context_timer() -> Timer<prometheus::VMHistogram> {
 }
 
 register_convex_histogram!(
+    ACTION_INITIALIZE_SECONDS,
+    "Time an action spends loading what it needs before importing, per step",
+    &["step"]
+);
+pub fn log_action_initialize_step(step: &'static str, elapsed: Duration) {
+    log_distribution_with_labels(
+        &ACTION_INITIALIZE_SECONDS,
+        elapsed.as_secs_f64(),
+        vec![StaticMetricLabel::new("step", step)],
+    );
+}
+
+register_convex_histogram!(
     WARM_SNAPSHOT_CONTEXT_SECONDS,
     "Time to deserialize a ready context, module graph included"
 );

@@ -626,4 +626,8 @@ impl<RT: Runtime> InMemoryIndexes for FunctionRunnerInMemoryIndexes<RT> {
             .collect::<Vec<(IndexKeyBytes, Timestamp, MemoryDocument)>>();
         Ok(Some(range))
     }
+
+    fn last_modified(&self, index_id: IndexId) -> Option<Timestamp> {
+        self.backend_last_modified.get(&index_id).copied()
+    }
 }

@@ -1,5 +1,4 @@
 use std::{
-    collections::BTreeMap,
     sync::{
         Arc,
         OnceLock,
@@ -59,6 +58,7 @@ use usage_tracking::FunctionUsageTracker;
 use crate::{
     environment::{
         action::{
+            phase::ActionResources,
             task::{
                 TaskId,
                 TaskRequest,
@@ -91,7 +91,7 @@ pub struct TaskExecutor<RT: Runtime> {
     pub task_retval_sender: mpsc::UnboundedSender<TaskResponse>,
     pub usage_tracker: FunctionUsageTracker,
     pub context: ExecutionContext,
-    pub resources: Arc<Mutex<BTreeMap<Reference, Resource>>>,
+    pub resources: Arc<Mutex<ActionResources>>,
     pub component_id: ComponentId,
     pub udf_path: CanonicalizedUdfPath,
     pub component_path: ComponentPath,

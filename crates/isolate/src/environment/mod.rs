@@ -13,6 +13,7 @@ pub mod action;
 pub mod analyze;
 pub mod async_op;
 pub mod auth_config;
+pub mod component_cache;
 pub mod component_definitions;
 pub mod crypto_rng;
 pub mod helpers;

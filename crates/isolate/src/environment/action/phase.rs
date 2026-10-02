@@ -17,6 +17,8 @@ use common::{
     bootstrap_model::components::EnvBinding,
     components::{
         ComponentId,
+        ComponentName,
+        ComponentPath,
         Reference,
         Resource,
     },
@@ -38,7 +40,10 @@ use database::{
 use errors::ErrorMetadata;
 use model::{
     canonical_urls::CanonicalUrlsModel,
-    components::ComponentsModel,
+    components::{
+        function_resources,
+        ComponentsModel,
+    },
     environment_variables::{
         types::{
             EnvVarName,
@@ -50,7 +55,6 @@ use model::{
         types::ModuleMetadata,
         ModuleModel,
     },
-    source_packages::SourcePackageModel,
     udf_config::UdfConfigModel,
 };
 use parking_lot::Mutex;
@@ -76,6 +80,7 @@ use value::{
 use crate::{
     environment::{
         action::task::TaskRequestEnum,
+        component_cache,
         helpers::{
             performance_unsupported,
             PerformanceApi,
@@ -83,6 +88,7 @@ use crate::{
         },
         ModuleCodeCacheResult,
     },
+    metrics,
     module_cache::{
         ModuleCache,
         V8ModuleSource,
@@ -97,12 +103,43 @@ use crate::{
 type PackageModules =
     BTreeMap<CanonicalizedModulePath, (Arc<ParsedDocument<ModuleMetadata>>, Arc<V8ModuleSource>)>;
 
-/// The module map of each component's latest source package seen. Loading
-/// one reads every module's metadata and source (363 modules for one app),
+/// What an action can resolve a reference to, as
+/// `ComponentsModel::preload_resources` would give it: the component's own
+/// functions and each child's exports, shared by every action while their
+/// modules stay the same, and the component's arguments.
+#[derive(Default)]
+pub struct ActionResources {
+    functions: Arc<BTreeMap<Reference, Resource>>,
+    arguments: BTreeMap<Reference, Resource>,
+    children: BTreeMap<ComponentName, component_cache::Exports>,
+}
+
+impl ActionResources {
+    pub fn get(&self, reference: &Reference) -> Option<&Resource> {
+        match reference {
+            Reference::Function(_) => self.functions.get(reference),
+            Reference::ChildComponent {
+                component,
+                attributes,
+            } => self.children.get(component)?.get(attributes),
+            _ => self.arguments.get(reference),
+        }
+    }
+}
+
+/// A component's latest source package seen, and what actions derive from
+/// it. Loading the modules reads every module's metadata and source (363
+/// modules for one app) and listing their functions walks all of them,
 /// which every action and HTTP action used to repeat.
-static PACKAGE_MODULES: LazyLock<
-    Mutex<HashMap<ComponentId, (ResolvedDocumentId, Arc<PackageModules>)>>,
-> = LazyLock::new(Default::default);
+struct PackageState {
+    package: ResolvedDocumentId,
+    modules: Arc<PackageModules>,
+    /// The component's functions, for the component path they were built at.
+    functions: Mutex<Option<(ComponentPath, Arc<BTreeMap<Reference, Resource>>)>>,
+}
+
+static PACKAGE_MODULES: LazyLock<Mutex<HashMap<ComponentId, Arc<PackageState>>>> =
+    LazyLock::new(Default::default);
 
 /// This struct is similar to UdfPhase. Action execution also has two
 /// phases: 1. We start by loading all imported modules, evaluating them, and
@@ -135,7 +172,7 @@ enum ActionPreloaded<RT: Runtime> {
         tx: Transaction<RT>,
         module_loader: Arc<dyn ModuleCache<RT>>,
         default_system_env_vars: BTreeMap<EnvVarName, EnvVarValue>,
-        resources: Arc<Mutex<BTreeMap<Reference, Resource>>>,
+        resources: Arc<Mutex<ActionResources>>,
         convex_origin_override: Arc<Mutex<Option<ConvexOrigin>>>,
     },
     Preloading,
@@ -159,7 +196,7 @@ impl<RT: Runtime> ActionPhase<RT> {
         tx: Transaction<RT>,
         module_loader: Arc<dyn ModuleCache<RT>>,
         default_system_env_vars: BTreeMap<EnvVarName, EnvVarValue>,
-        resources: Arc<Mutex<BTreeMap<Reference, Resource>>>,
+        resources: Arc<Mutex<ActionResources>>,
         convex_origin_override: Arc<Mutex<Option<ConvexOrigin>>>,
     ) -> Self {
         Self {
@@ -196,6 +233,7 @@ impl<RT: Runtime> ActionPhase<RT> {
         let component_id = self.component;
         self.preloaded = timeout
             .with_release_permit(PauseReason::UdfInitialize, async {
+                let step = std::time::Instant::now();
                 let udf_config = UdfConfigModel::new(&mut tx, component_id.into())
                     .get()
                     .await?;
@@ -206,9 +244,8 @@ impl<RT: Runtime> ActionPhase<RT> {
                 let import_time_unix_timestamp =
                     udf_config.as_ref().map(|c| c.import_phase_unix_timestamp);
 
-                let source_package = SourcePackageModel::new(&mut tx, component_id.into())
-                    .get_latest()
-                    .await?;
+                let source_package =
+                    component_cache::latest_source_package(&mut tx, component_id).await?;
                 // A source package fixes every module of the component, so its
                 // module map is loaded once instead of on every action.
                 let package_id = source_package.as_ref().map(|p| p.id());
@@ -216,11 +253,12 @@ impl<RT: Runtime> ActionPhase<RT> {
                     PACKAGE_MODULES
                         .lock()
                         .get(&component_id)
-                        .filter(|(cached_id, _)| *cached_id == id)
-                        .map(|(_, modules)| modules.clone())
+                        .filter(|state| state.package == id)
+                        .cloned()
                 });
-                let modules = match cached {
-                    Some(modules) => modules,
+                let package_state = cached;
+                let modules = match &package_state {
+                    Some(state) => state.modules.clone(),
                     None => {
                         let module_metadata = ModuleModel::new(&mut tx)
                             .get_all_metadata(component_id)
@@ -241,23 +279,71 @@ impl<RT: Runtime> ActionPhase<RT> {
                                 .await?;
                             modules.insert(path, (metadata, module));
                         }
-                        let modules = Arc::new(modules);
-                        if let Some(id) = package_id {
-                            PACKAGE_MODULES
-                                .lock()
-                                .insert(component_id, (id, modules.clone()));
-                        }
-                        modules
+                        Arc::new(modules)
                     },
                 };
+                let package_state = match (package_state, package_id) {
+                    (Some(state), _) => Some(state),
+                    (None, Some(package)) => {
+                        let state = Arc::new(PackageState {
+                            package,
+                            modules: modules.clone(),
+                            functions: Mutex::new(None),
+                        });
+                        PACKAGE_MODULES.lock().insert(component_id, state.clone());
+                        Some(state)
+                    },
+                    (None, None) => None,
+                };
 
+                metrics::log_action_initialize_step("modules", step.elapsed());
+                let step = std::time::Instant::now();
                 {
-                    let loaded_resources = ComponentsModel::new(&mut tx)
-                        .preload_resources(component_id)
+                    let component_path =
+                        BootstrapComponentsModel::new(&mut tx).must_component_path(component_id)?;
+                    let list = || {
+                        Arc::new(function_resources(
+                            &component_path,
+                            modules.values().map(|(metadata, _)| &***metadata),
+                        ))
+                    };
+                    let functions = match &package_state {
+                        Some(state) => {
+                            let mut cached = state.functions.lock();
+                            match &*cached {
+                                Some((path, functions)) if *path == component_path => {
+                                    functions.clone()
+                                },
+                                _ => {
+                                    let functions = list();
+                                    *cached = Some((component_path.clone(), functions.clone()));
+                                    functions
+                                },
+                            }
+                        },
+                        None => list(),
+                    };
+                    metrics::log_action_initialize_step("functions", step.elapsed());
+                    let step = std::time::Instant::now();
+                    let arguments = ComponentsModel::new(&mut tx)
+                        .preload_argument_resources(component_id)
                         .await?;
-                    let mut resources = resources.lock();
-                    *resources = loaded_resources;
+                    let mut children = BTreeMap::new();
+                    for (name, child) in ComponentsModel::new(&mut tx)
+                        .component_children_ids(component_id)
+                        .await?
+                    {
+                        let exports = component_cache::child_exports(&mut tx, child).await?;
+                        children.insert(name, exports);
+                    }
+                    *resources.lock() = ActionResources {
+                        functions,
+                        arguments,
+                        children,
+                    };
+                    metrics::log_action_initialize_step("children", step.elapsed());
                 }
+                let step = std::time::Instant::now();
                 let canonical_urls = CanonicalUrlsModel::new(&mut tx)
                     .get_canonical_urls()
                     .await?;
@@ -321,6 +407,7 @@ impl<RT: Runtime> ActionPhase<RT> {
                     )
                 };
 
+                metrics::log_action_initialize_step("environment", step.elapsed());
                 Ok(ActionPreloaded::Ready {
                     module_loader,
                     modules,
