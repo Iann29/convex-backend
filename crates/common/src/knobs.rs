@@ -2017,8 +2017,14 @@ pub static UDF_404_ON_BAD_PATH: LazyLock<bool> =
 
 /// Percentage of index page queries to send to the database to verify that
 /// cache results match.
+///
+/// At 100 every cache hit is read again from persistence, so the cache saves
+/// no reads at all. 1 keeps a sample that still panics on a mismatch: on a
+/// chat-like load with 500 live subscriptions, the write p99 dropped from 275
+/// to 91 ms and the time for a message to reach its watchers from 580 to
+/// 163 ms (p99).
 pub static INDEX_CACHE_VERIFY_PERCENT: LazyLock<u8> =
-    LazyLock::new(|| env_config("INDEX_CACHE_VERIFY_PERCENT", 100));
+    LazyLock::new(|| env_config("INDEX_CACHE_VERIFY_PERCENT", 1));
 
 /// Initial backoff for retrying failed persistence writes.
 pub static INITIAL_PERSISTENCE_WRITES_BACKOFF: LazyLock<Duration> = LazyLock::new(|| {
