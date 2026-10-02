@@ -3,21 +3,25 @@
 //! Every query or mutation runs in a fresh V8 context, and the app's module
 //! graph is compiled, instantiated and evaluated again inside it. With real
 //! app code that costs 4–20 ms per call, before the function does anything.
-//! Import is deterministic here: it cannot reach the database, and ops only
-//! see values fixed per push. So when the import of a module calls no op
-//! besides the pure ones the probe below answers, the context right after it
-//! is the same for every request on the same source package. It is built
-//! once into a V8 snapshot, and a request deserializes it instead of
+//! Import is deterministic here: it cannot reach the database; `Math.random`
+//! and `Date.now` run on a seed and a time fixed per push; and environment
+//! variables are read from the deployment. So the context right after the
+//! import is the same for every request on the same source package while
+//! the variables it read hold the same values ([`ImportInputs`]). It is
+//! built once into a V8 snapshot, and a request deserializes it instead of
 //! evaluating the graph. Each request still gets its own copy, so module
 //! state starts fresh every time, as before.
 //!
 //! 1. After a fresh import succeeds, [`observe`] keeps the module names and
-//!    sources of the graph under (component, module, source package).
+//!    sources of the graph under (component, module, source package), with the
+//!    import's inputs.
 //! 2. A background thread builds one blob with every kept graph, in a child
-//!    process: the backend binary started with [`BUILD_DIR_ENV`]. V8 aborts the
-//!    process on objects it cannot serialize (an `Intl` formatter created at
-//!    import is one), so the child tries each new graph on its own first and
-//!    reports progress; a graph that kills it is left out.
+//!    process: the backend binary started with [`BUILDER_ENV`], fed through
+//!    pipes so the variables never touch the disk. The import runs under a
+//!    probe that answers the inputs and the pure ops, and refuses anything
+//!    else. V8 aborts the process on objects it cannot serialize (an `Intl`
+//!    formatter created at import is one), so the child tries each new graph on
+//!    its own first and reports progress; a graph that kills it is left out.
 //! 3. The blob becomes the next generation. Isolate workers recreate their
 //!    isolate from it, and [`crate::context_cache::ContextCache`] answers which
 //!    graphs the isolate's blob holds.
@@ -36,11 +40,8 @@ use std::{
     io::{
         BufRead,
         BufReader,
+        Read,
         Write,
-    },
-    path::{
-        Path,
-        PathBuf,
     },
     process::{
         Command,
@@ -75,6 +76,11 @@ use common::{
         AMAGE_WARM_SNAPSHOT_MAX_MODULES,
         AMAGE_WARM_SNAPSHOT_TIMEOUT,
     },
+    runtime::UnixTimestamp,
+    types::{
+        EnvVarName,
+        EnvVarValue,
+    },
 };
 use deno_core::{
     v8::{
@@ -89,6 +95,11 @@ use parking_lot::{
     Mutex,
     RwLock,
 };
+use rand::{
+    Rng,
+    SeedableRng,
+};
+use rand_chacha::ChaCha12Rng;
 use serde::{
     Deserialize,
     Serialize,
@@ -103,9 +114,15 @@ use crate::{
     udf_runtime,
 };
 
-/// Set on the child process: the directory with `input.json`, where it writes
-/// `blob.bin` and `output.json`.
-pub const BUILD_DIR_ENV: &str = "AMAGE_WARM_SNAPSHOT_BUILD_DIR";
+/// Set on the child process. It reads the runtime snapshot and the graphs on
+/// stdin, reports progress on stderr and writes the blob on stdout.
+pub const BUILDER_ENV: &str = "AMAGE_WARM_SNAPSHOT_BUILDER";
+
+/// Prefix of the child's progress lines on stderr.
+const PROGRESS: &str = "warm-snapshot:";
+
+/// Starts the child's output on stdout: a JSON length, the JSON, the blob.
+const OUTPUT_MARKER: &[u8] = b"\0amage-warm-snapshot\0";
 
 /// Properties `RequestScope::new` installs on `Convex`, in that order.
 const CONVEX_HOOKS: [&str; 4] = ["syscall", "op", "asyncSyscall", "asyncOp"];
@@ -118,6 +135,33 @@ pub struct WarmKey {
     pub source_package: ResolvedDocumentId,
 }
 
+/// What an import read from outside its source. A ready context built from
+/// an import is valid while these hold.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct ImportInputs {
+    /// Environment variables and the values they held, sorted by name.
+    pub env: Vec<(EnvVarName, Option<EnvVarValue>)>,
+    /// The per-push seed of `Math.random` and time of `Date.now` during
+    /// import.
+    pub seed_and_time: Option<([u8; 32], UnixTimestamp)>,
+}
+
+impl ImportInputs {
+    /// `env` as read, possibly with repeats, in the import's order.
+    pub fn new(
+        env: &[(EnvVarName, Option<EnvVarValue>)],
+        seed_and_time: Option<([u8; 32], UnixTimestamp)>,
+    ) -> Self {
+        let env = env
+            .iter()
+            .cloned()
+            .collect::<BTreeMap<_, _>>()
+            .into_iter()
+            .collect();
+        Self { env, seed_and_time }
+    }
+}
+
 /// A ready context in an isolate's blob.
 #[derive(Clone, Debug)]
 pub struct WarmEntry {
@@ -126,6 +170,8 @@ pub struct WarmEntry {
     /// The graph, in the order its modules were attached to the context as
     /// snapshot data (entry first).
     pub modules: Arc<[ModuleSpecifier]>,
+    /// The inputs the import ran with; the request must see the same.
+    pub inputs: Arc<ImportInputs>,
 }
 
 /// One generation: a blob and the ready contexts in it.
@@ -163,10 +209,12 @@ pub fn generation() -> u64 {
     GENERATION.load(Ordering::Acquire)
 }
 
+#[derive(Clone)]
 struct Graph {
     /// Entry first, then the modules it imports, as the request registered
     /// them.
     modules: Vec<(ModuleSpecifier, Arc<V8ModuleSource>)>,
+    inputs: ImportInputs,
 }
 
 enum State {
@@ -174,8 +222,8 @@ enum State {
     Waiting(Graph),
     /// In the current blob.
     Ready(Graph),
-    /// The builder refused it, or the child died on it.
-    Refused,
+    /// The builder refused it, or the child died on it, with these inputs.
+    Refused(ImportInputs),
 }
 
 #[derive(Default)]
@@ -198,15 +246,18 @@ pub fn enable_builder() {
 }
 
 /// Keeps the graph of a module that was just imported in a fresh context, so
-/// the next build can include it. Cheap when the key is already known.
-pub fn observe(key: WarmKey, module_map: &ModuleMap) {
+/// the next build can include it. Cheap when the key is already known with
+/// the same inputs; with new inputs (a variable changed), it is built again.
+pub fn observe(key: WarmKey, module_map: &ModuleMap, inputs: ImportInputs) {
     if !*AMAGE_WARM_SNAPSHOT || !BUILDER_ENABLED.load(Ordering::Acquire) {
         return;
     }
     {
         let mut registry = REGISTRY.lock();
-        if registry.keys.contains_key(&key) {
-            return;
+        match registry.keys.get(&key) {
+            Some(State::Waiting(graph) | State::Ready(graph)) if graph.inputs == inputs => return,
+            Some(State::Refused(refused)) if *refused == inputs => return,
+            _ => (),
         }
         let component = key.module.component;
         if registry.package.get(&component) != Some(&key.source_package) {
@@ -215,7 +266,9 @@ pub fn observe(key: WarmKey, module_map: &ModuleMap) {
                 k.module.component != component || k.source_package == key.source_package
             });
         }
-        if registry.keys.len() >= *AMAGE_WARM_SNAPSHOT_MAX_MODULES {
+        if !registry.keys.contains_key(&key)
+            && registry.keys.len() >= *AMAGE_WARM_SNAPSHOT_MAX_MODULES
+        {
             return;
         }
         let modules = module_map
@@ -225,7 +278,9 @@ pub fn observe(key: WarmKey, module_map: &ModuleMap) {
         if modules.is_empty() {
             return;
         }
-        registry.keys.insert(key, State::Waiting(Graph { modules }));
+        registry
+            .keys
+            .insert(key, State::Waiting(Graph { modules, inputs }));
     }
     let wake = WAKE.get_or_init(|| {
         let (tx, rx) = mpsc::channel();
@@ -270,7 +325,7 @@ fn builder_loop(rx: mpsc::Receiver<()>) {
 struct PlanEntry {
     id: u32,
     key: WarmKey,
-    modules: Vec<(ModuleSpecifier, Arc<V8ModuleSource>)>,
+    graph: Graph,
     /// Not in a blob before, so the child tries it alone first.
     trial: bool,
 }
@@ -287,12 +342,12 @@ fn plan() -> Option<Vec<PlanEntry>> {
                 (graph, true)
             },
             State::Ready(graph) => (graph, false),
-            State::Refused => continue,
+            State::Refused(_) => continue,
         };
         plan.push(PlanEntry {
             id: plan.len() as u32,
             key: key.clone(),
-            modules: graph.modules.clone(),
+            graph: graph.clone(),
             trial,
         });
     }
@@ -312,17 +367,20 @@ fn publish(plan: &[PlanEntry], built: Built) {
             entry.key.clone(),
             WarmEntry {
                 index: *index,
-                modules: entry.modules.iter().map(|(name, _)| name.clone()).collect(),
+                modules: entry
+                    .graph
+                    .modules
+                    .iter()
+                    .map(|(name, _)| name.clone())
+                    .collect(),
+                inputs: Arc::new(entry.graph.inputs.clone()),
             },
         );
-        if let Some(state) = registry.keys.get_mut(&entry.key) {
-            let graph = match std::mem::replace(state, State::Refused) {
-                State::Waiting(graph) | State::Ready(graph) => graph,
-                State::Refused => Graph {
-                    modules: entry.modules.clone(),
-                },
-            };
-            *state = State::Ready(graph);
+        // Unless a newer import replaced it meanwhile.
+        if let Some(state) = registry.keys.get_mut(&entry.key)
+            && matches!(state, State::Waiting(graph) if graph.inputs == entry.graph.inputs)
+        {
+            *state = State::Ready(entry.graph.clone());
         }
     }
     for (id, reason) in &built.refused {
@@ -333,7 +391,10 @@ fn publish(plan: &[PlanEntry], built: Built) {
             "Warm snapshot leaves {:?} out: {reason}",
             entry.key.module.module_path
         );
-        registry.keys.insert(entry.key.clone(), State::Refused);
+        registry.keys.insert(
+            entry.key.clone(),
+            State::Refused(entry.graph.inputs.clone()),
+        );
     }
     drop(registry);
     metrics::log_warm_snapshot_contexts(entries.len(), built.blob.len());
@@ -364,9 +425,14 @@ struct EntryInput {
     /// Entry first.
     modules: Vec<String>,
     trial: bool,
+    /// Environment variables the import read, and their values.
+    env: BTreeMap<String, Option<String>>,
+    /// The import's `Math.random` seed and `Date.now` in milliseconds.
+    seed: Option<[u8; 32]>,
+    now_ms: Option<u64>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 struct BuildOutput {
     contexts: Vec<(u32, usize)>,
     refused: Vec<(u32, String)>,
@@ -383,7 +449,7 @@ fn build_in_child(plan: &[PlanEntry]) -> anyhow::Result<Built> {
     let mut refused = vec![];
     'entries: for entry in plan {
         let mut texts = vec![];
-        for (name, source) in &entry.modules {
+        for (name, source) in &entry.graph.modules {
             // The child compiles text; a source that does not survive the trip
             // exactly would compile into a different module.
             let Some(text) = source.source().to_exact_text() else {
@@ -392,6 +458,10 @@ fn build_in_child(plan: &[PlanEntry]) -> anyhow::Result<Built> {
             };
             texts.push((name.to_string(), text));
         }
+        let (seed, now_ms) = match entry.graph.inputs.seed_and_time {
+            Some((seed, time)) => (Some(seed), Some(time.as_ms_since_epoch()?)),
+            None => (None, None),
+        };
         let group = groups
             .entry((entry.key.module.component, entry.key.source_package))
             .or_insert_with(|| GroupInput {
@@ -404,31 +474,34 @@ fn build_in_child(plan: &[PlanEntry]) -> anyhow::Result<Built> {
         group.entries.push(EntryInput {
             id: entry.id,
             modules: entry
+                .graph
                 .modules
                 .iter()
                 .map(|(name, _)| name.to_string())
                 .collect(),
             trial: entry.trial,
+            env: entry
+                .graph
+                .inputs
+                .env
+                .iter()
+                .map(|(name, value)| (name.to_string(), value.as_ref().map(|v| v.to_string())))
+                .collect(),
+            seed,
+            now_ms,
         });
     }
     let mut input = BuildInput {
         groups: groups.into_values().collect(),
     };
-    let dir = BuildDir::new()?;
-    // Every blob in this process must carry the same read-only part as the
-    // runtime snapshot (see `run_builder`), so the child starts from ours.
-    std::fs::write(dir.0.join("base.bin"), udf_runtime::base_snapshot())?;
     // A graph that kills the child is left out and the child runs again,
     // a bounded number of times.
     for _ in 0..4 {
-        std::fs::write(dir.0.join("input.json"), serde_json::to_vec(&input)?)?;
-        match run_child(&dir.0)? {
-            ChildOutcome::Done => {
-                let output: BuildOutput =
-                    serde_json::from_slice(&std::fs::read(dir.0.join("output.json"))?)?;
+        match run_child(&input)? {
+            ChildOutcome::Done(output, blob) => {
                 refused.extend(output.refused);
                 return Ok(Built {
-                    blob: std::fs::read(dir.0.join("blob.bin"))?,
+                    blob,
                     contexts: output.contexts,
                     refused,
                 });
@@ -445,61 +518,64 @@ fn build_in_child(plan: &[PlanEntry]) -> anyhow::Result<Built> {
     anyhow::bail!("the builder kept dying")
 }
 
-struct BuildDir(PathBuf);
-
-impl BuildDir {
-    fn new() -> anyhow::Result<Self> {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let dir = std::env::temp_dir().join(format!(
-            "convex-warm-snapshot-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir(&dir)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
-        }
-        Ok(Self(dir))
-    }
-}
-
-impl Drop for BuildDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
 enum ChildOutcome {
-    Done,
+    Done(BuildOutput, Vec<u8>),
     DiedOn(u32, String),
     Failed(String),
 }
 
-fn run_child(dir: &Path) -> anyhow::Result<ChildOutcome> {
+/// What the child reads on stdin: the runtime snapshot, then the graphs.
+fn child_input(input: &BuildInput) -> anyhow::Result<Vec<u8>> {
+    // Every blob in this process must carry the same read-only part as the
+    // runtime snapshot (see `run_builder`), so the child starts from ours.
+    let base = udf_runtime::base_snapshot();
+    let mut bytes = (base.len() as u64).to_le_bytes().to_vec();
+    bytes.extend_from_slice(base);
+    serde_json::to_writer(&mut bytes, input)?;
+    Ok(bytes)
+}
+
+fn parse_output(output: &[u8]) -> anyhow::Result<(BuildOutput, Vec<u8>)> {
+    let start = output
+        .windows(OUTPUT_MARKER.len())
+        .position(|w| w == OUTPUT_MARKER)
+        .context("the builder wrote no output")?
+        + OUTPUT_MARKER.len();
+    let output = &output[start..];
+    anyhow::ensure!(output.len() >= 8, "the builder output is cut");
+    let json_len = u64::from_le_bytes(output[..8].try_into()?) as usize;
+    anyhow::ensure!(output.len() >= 8 + json_len, "the builder output is cut");
+    let built = serde_json::from_slice(&output[8..8 + json_len])?;
+    Ok((built, output[8 + json_len..].to_vec()))
+}
+
+fn run_child(input: &BuildInput) -> anyhow::Result<ChildOutcome> {
     let exe = std::env::current_exe().context("current_exe")?;
     let mut child = Command::new(exe)
-        .env(BUILD_DIR_ENV, dir)
-        .stdin(Stdio::null())
+        .env(BUILDER_ENV, "1")
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .context("Failed to start the warm snapshot builder")?;
-    let stdout = child.stdout.take().context("child stdout")?;
+    let bytes = child_input(input)?;
+    let mut stdin = child.stdin.take().context("child stdin")?;
+    let writer = std::thread::spawn(move || stdin.write_all(&bytes));
+    let mut stdout = child.stdout.take().context("child stdout")?;
+    let output = std::thread::spawn(move || {
+        let mut bytes = vec![];
+        stdout.read_to_end(&mut bytes).map(|_| bytes)
+    });
     let stderr = child.stderr.take().context("child stderr")?;
     let progress = std::thread::spawn(move || {
-        BufReader::new(stdout)
-            .lines()
-            .map_while(Result::ok)
-            .collect::<Vec<_>>()
-    });
-    let errors = std::thread::spawn(move || {
-        let mut tail = String::new();
+        let (mut lines, mut last) = (vec![], String::new());
         for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-            tail = line;
+            match line.strip_prefix(PROGRESS) {
+                Some(progress) => lines.push(progress.trim().to_string()),
+                None => last = line,
+            }
         }
-        tail
+        (lines, last)
     });
     let deadline = Instant::now() + *AMAGE_WARM_SNAPSHOT_TIMEOUT;
     let status = loop {
@@ -513,13 +589,19 @@ fn run_child(dir: &Path) -> anyhow::Result<ChildOutcome> {
         }
         std::thread::sleep(Duration::from_millis(50));
     };
-    let lines = progress.join().unwrap_or_default();
-    let last_error = errors.join().unwrap_or_default();
+    // A child that died early leaves the writer with a broken pipe.
+    let _ = writer.join();
+    let output = output.join().unwrap_or_else(|_| Ok(vec![]))?;
+    let (lines, last_error) = progress.join().unwrap_or_default();
     if status.is_some_and(|s| s.success()) {
-        return Ok(ChildOutcome::Done);
+        let (built, blob) = parse_output(&output)?;
+        return Ok(ChildOutcome::Done(built, blob));
     }
+    // The child's own last words go to the log only as their kind: what V8
+    // prints when it aborts can quote heap contents.
     let why = match status {
-        Some(status) => format!("{status}; {last_error}"),
+        Some(status) if last_error.starts_with('#') => format!("{status}, V8 aborted"),
+        Some(status) => status.to_string(),
         None => "timed out".to_string(),
     };
     // The graph it was trying when it died.
@@ -544,8 +626,8 @@ fn run_child(dir: &Path) -> anyhow::Result<ChildOutcome> {
 /// Runs the builder if this process was started as one; returns its exit
 /// code. Called before anything else in `main`.
 pub fn run_builder_if_requested() -> Option<i32> {
-    let dir = std::env::var_os(BUILD_DIR_ENV)?;
-    Some(match run_builder(Path::new(&dir)) {
+    std::env::var_os(BUILDER_ENV)?;
+    Some(match run_builder() {
         Ok(()) => 0,
         Err(e) => {
             eprintln!("warm snapshot builder: {e:#}");
@@ -554,7 +636,7 @@ pub fn run_builder_if_requested() -> Option<i32> {
     })
 }
 
-fn run_builder(dir: &Path) -> anyhow::Result<()> {
+fn run_builder() -> anyhow::Result<()> {
     // V8 shares one read-only heap among all isolates of a process, set up
     // from the first snapshot, so every blob the parent loads must lay out
     // its read-only part exactly as the parent's runtime snapshot does. A
@@ -563,9 +645,15 @@ fn run_builder(dir: &Path) -> anyhow::Result<()> {
     // read-only part. Must precede V8's initialization.
     v8::V8::set_flags_from_string("--no-extensible-ro-snapshot");
     crate::client::initialize_v8();
-    let base: &'static [u8] = Box::leak(std::fs::read(dir.join("base.bin"))?.into_boxed_slice());
-    let input: BuildInput = serde_json::from_slice(&std::fs::read(dir.join("input.json"))?)?;
-    let mut out = std::io::stdout().lock();
+    let mut bytes = vec![];
+    std::io::stdin().read_to_end(&mut bytes)?;
+    anyhow::ensure!(bytes.len() >= 8, "no input");
+    let base_len = u64::from_le_bytes(bytes[..8].try_into()?) as usize;
+    anyhow::ensure!(bytes.len() >= 8 + base_len, "cut input");
+    let base: &'static [u8] = Box::leak(bytes[8..8 + base_len].to_vec().into_boxed_slice());
+    let input: BuildInput = serde_json::from_slice(&bytes[8 + base_len..])?;
+    drop(bytes);
+    let mut out = std::io::stderr().lock();
     let mut accepted = vec![];
     let mut refused = vec![];
     for (g, group) in input.groups.iter().enumerate() {
@@ -574,15 +662,20 @@ fn run_builder(dir: &Path) -> anyhow::Result<()> {
                 accepted.push((g, entry));
                 continue;
             }
-            writeln!(out, "try {}", entry.id)?;
+            writeln!(out, "{PROGRESS} try {}", entry.id)?;
             out.flush()?;
             let (_, contexts, mut no) = build_blob(base, &input.groups, &[(g, entry)])?;
             if contexts.is_empty() {
                 let reason = no.pop().map(|(_, r)| r).unwrap_or_default();
-                writeln!(out, "no {} {}", entry.id, reason.replace('\n', " "))?;
+                writeln!(
+                    out,
+                    "{PROGRESS} no {} {}",
+                    entry.id,
+                    reason.replace('\n', " ")
+                )?;
                 refused.push((entry.id, reason));
             } else {
-                writeln!(out, "ok {}", entry.id)?;
+                writeln!(out, "{PROGRESS} ok {}", entry.id)?;
                 accepted.push((g, entry));
             }
             out.flush()?;
@@ -590,11 +683,13 @@ fn run_builder(dir: &Path) -> anyhow::Result<()> {
     }
     let (blob, contexts, no) = build_blob(base, &input.groups, &accepted)?;
     refused.extend(no);
-    std::fs::write(dir.join("blob.bin"), &blob)?;
-    std::fs::write(
-        dir.join("output.json"),
-        serde_json::to_vec(&BuildOutput { contexts, refused })?,
-    )?;
+    let json = serde_json::to_vec(&BuildOutput { contexts, refused })?;
+    let mut stdout = std::io::stdout().lock();
+    stdout.write_all(OUTPUT_MARKER)?;
+    stdout.write_all(&(json.len() as u64).to_le_bytes())?;
+    stdout.write_all(&json)?;
+    stdout.write_all(&blob)?;
+    stdout.flush()?;
     Ok(())
 }
 
@@ -608,6 +703,14 @@ thread_local! {
     /// Set while the builder imports; off at request time.
     static PROBING: Cell<bool> = const { Cell::new(false) };
     static REACTED: Cell<bool> = const { Cell::new(false) };
+    /// The inputs of the import running in the builder.
+    static IMPORT: RefCell<Option<ImportState>> = const { RefCell::new(None) };
+}
+
+struct ImportState {
+    env: BTreeMap<String, Option<String>>,
+    rng: Option<ChaCha12Rng>,
+    now_ms: Option<u64>,
 }
 
 /// One blob with the runtime's default context and a ready context per
@@ -665,16 +768,28 @@ fn prepare_context(
 ) -> anyhow::Result<()> {
     VIOLATIONS.with(|v| v.borrow_mut().clear());
     REACTED.set(false);
+    IMPORT.set(Some(ImportState {
+        env: entry.env.clone(),
+        rng: entry.seed.map(ChaCha12Rng::from_seed),
+        now_ms: entry.now_ms,
+    }));
     PROBING.set(true);
     let result = import(scope, group, entry);
     PROBING.set(false);
-    result?;
+    IMPORT.set(None);
+    // Reasons name ops and syscalls only: an exception's text may hold the
+    // value of a variable, and reasons end up in the backend's log.
+    const REJECTION: &str = "an unhandled rejection";
     let violations = VIOLATIONS.with(|v| std::mem::take(&mut *v.borrow_mut()));
-    anyhow::ensure!(
-        violations.is_empty(),
-        "import used {}",
-        violations.join(", ")
-    );
+    let ops = violations
+        .iter()
+        .filter(|v| *v != REJECTION)
+        .cloned()
+        .collect::<Vec<_>>();
+    anyhow::ensure!(ops.is_empty(), "import used {}", ops.join(", "));
+    // An import that throws also leaves its own promise rejected.
+    result?;
+    anyhow::ensure!(violations.is_empty(), "import left {REJECTION}");
     anyhow::ensure!(
         !REACTED.get(),
         "import left promise reactions for the request to run"
@@ -710,13 +825,13 @@ fn import(
     {
         tc_scope!(let tc, scope);
         let instantiated = module.instantiate_module(tc, resolve);
-        if let Some(e) = tc.exception() {
-            anyhow::bail!("instantiate threw {}", e.to_rust_string_lossy(tc));
+        if tc.exception().is_some() {
+            anyhow::bail!("instantiate threw");
         }
         anyhow::ensure!(instantiated == Some(true), "instantiate failed");
         let value = module.evaluate(tc);
-        if let Some(e) = tc.exception() {
-            anyhow::bail!("import threw {}", e.to_rust_string_lossy(tc));
+        if tc.exception().is_some() {
+            anyhow::bail!("import threw");
         }
         let promise: v8::Local<v8::Promise> = value
             .context("evaluate returned nothing")?
@@ -725,10 +840,7 @@ fn import(
         match promise.state() {
             v8::PromiseState::Fulfilled => (),
             v8::PromiseState::Pending => anyhow::bail!("top-level await"),
-            v8::PromiseState::Rejected => {
-                let e = promise.result(tc);
-                anyhow::bail!("import threw {}", e.to_rust_string_lossy(tc));
-            },
+            v8::PromiseState::Rejected => anyhow::bail!("import threw"),
         }
     }
     anyhow::ensure!(module.get_status() == v8::ModuleStatus::Evaluated);
@@ -759,8 +871,8 @@ fn compile<'s>(
     let module = {
         tc_scope!(let tc, scope);
         let module = v8::script_compiler::compile_module(tc, &mut source);
-        if let Some(e) = tc.exception() {
-            anyhow::bail!("{name} does not compile: {}", e.to_rust_string_lossy(tc));
+        if tc.exception().is_some() {
+            anyhow::bail!("{name} does not compile");
         }
         module.context("compile failed")?
     };
@@ -850,14 +962,57 @@ fn violation(scope: &mut v8::PinScope<'_, '_>, what: String) {
     scope.throw_exception(exception);
 }
 
-/// `Convex.op` during a ready-context import: answers the pure ops (same
-/// result as `ops::text`), refuses the rest.
+/// `Convex.op` during a ready-context import: answers the import's inputs
+/// and the pure ops with what the real ops return
+/// (`ops::environment_variables`, `ops::random`, `ops::time`, `ops::text`), and
+/// refuses the rest.
 pub(crate) fn probe_op<'s>(
     scope: &mut v8::PinScope<'s, '_>,
     args: v8::FunctionCallbackArguments<'s>,
     mut rv: v8::ReturnValue<v8::Value>,
 ) {
     let name = args.get(0).to_rust_string_lossy(scope);
+    if PROBING.get() && matches!(&name[..], "environmentVariables/get" | "random" | "now") {
+        let arg = args.get(1).to_rust_string_lossy(scope);
+        enum Answer {
+            Text(Option<String>),
+            Number(f64),
+            Unknown,
+        }
+        let answer = IMPORT.with(|import| {
+            let mut import = import.borrow_mut();
+            let Some(import) = import.as_mut() else {
+                return Answer::Unknown;
+            };
+            match &name[..] {
+                "environmentVariables/get" => match import.env.get(&arg) {
+                    Some(value) => Answer::Text(value.clone()),
+                    None => Answer::Unknown,
+                },
+                "random" => match import.rng.as_mut() {
+                    Some(rng) => Answer::Number(rng.random()),
+                    None => Answer::Unknown,
+                },
+                _ => match import.now_ms {
+                    Some(ms) => Answer::Number(ms as f64),
+                    None => Answer::Unknown,
+                },
+            }
+        });
+        match answer {
+            Answer::Text(Some(value)) => {
+                let value = v8::String::new(scope, &value).unwrap();
+                rv.set(value.into());
+            },
+            Answer::Text(None) => rv.set_null(),
+            Answer::Number(n) => {
+                let n = v8::Number::new(scope, n);
+                rv.set(n.into());
+            },
+            Answer::Unknown => violation(scope, format!("op {name} without its input")),
+        }
+        return;
+    }
     if PROBING.get() && name == "textEncoder/normalizeLabel" {
         let label = args.get(1).to_rust_string_lossy(scope);
         let (key, value) = match Encoding::for_label_no_replacement(label.as_bytes()) {
@@ -951,22 +1106,26 @@ mod tests {
         self,
         scope,
     };
+    use rand::{
+        Rng,
+        SeedableRng,
+    };
+    use rand_chacha::ChaCha12Rng;
 
     use super::{
-        BuildDir,
         BuildInput,
         BuildOutput,
         EntryInput,
         GroupInput,
         WarmSnapshot,
-        BUILD_DIR_ENV,
+        BUILDER_ENV,
     };
     use crate::udf_runtime;
 
     /// The child half: this binary started again as the builder.
     #[test]
     fn builder_child() {
-        if std::env::var_os(BUILD_DIR_ENV).is_some() {
+        if std::env::var_os(BUILDER_ENV).is_some() {
             std::process::exit(super::run_builder_if_requested().unwrap());
         }
     }
@@ -976,47 +1135,68 @@ mod tests {
             id,
             modules: modules.iter().map(|m| format!("convex:/{m}")).collect(),
             trial: true,
+            env: Default::default(),
+            seed: None,
+            now_ms: None,
         }
     }
 
-    /// Builds a blob in the child with one entry per graph.
-    fn child_build(modules: &[(&str, &str)], graphs: &[&[&str]]) -> (Vec<u8>, BuildOutput) {
+    /// Builds a blob in the child, which is this test binary started again.
+    fn child_build_entries(
+        modules: &[(&str, &str)],
+        entries: Vec<EntryInput>,
+    ) -> (Vec<u8>, BuildOutput) {
+        use std::io::{
+            Read,
+            Write,
+        };
         crate::client::initialize_v8();
-        let dir = BuildDir::new().unwrap();
         let input = BuildInput {
             groups: vec![GroupInput {
                 modules: modules
                     .iter()
                     .map(|(name, source)| (format!("convex:/{name}"), source.to_string()))
                     .collect(),
-                entries: graphs
-                    .iter()
-                    .enumerate()
-                    .map(|(id, graph)| entry(id as u32, graph))
-                    .collect(),
+                entries,
             }],
         };
-        std::fs::write(
-            dir.0.join("input.json"),
-            serde_json::to_vec(&input).unwrap(),
-        )
-        .unwrap();
-        std::fs::write(dir.0.join("base.bin"), udf_runtime::base_snapshot()).unwrap();
-        let status = std::process::Command::new(std::env::current_exe().unwrap())
+        let bytes = super::child_input(&input).unwrap();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
                 "warm_snapshot::tests::builder_child",
                 "--test-threads=1",
-                "--nocapture",
             ])
-            .env(BUILD_DIR_ENV, &dir.0)
-            .stdout(std::process::Stdio::null())
-            .status()
+            .env(BUILDER_ENV, "1")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
             .unwrap();
+        let mut stdin = child.stdin.take().unwrap();
+        let writer = std::thread::spawn(move || stdin.write_all(&bytes));
+        let mut output = vec![];
+        child
+            .stdout
+            .take()
+            .unwrap()
+            .read_to_end(&mut output)
+            .unwrap();
+        writer.join().unwrap().unwrap();
+        let status = child.wait().unwrap();
         assert!(status.success(), "builder child failed: {status}");
-        let output: BuildOutput =
-            serde_json::from_slice(&std::fs::read(dir.0.join("output.json")).unwrap()).unwrap();
-        (std::fs::read(dir.0.join("blob.bin")).unwrap(), output)
+        let (built, blob) = super::parse_output(&output).unwrap();
+        (blob, built)
+    }
+
+    /// Builds a blob in the child with one entry per graph, no inputs.
+    fn child_build(modules: &[(&str, &str)], graphs: &[&[&str]]) -> (Vec<u8>, BuildOutput) {
+        let entries = graphs
+            .iter()
+            .enumerate()
+            .map(|(id, graph)| entry(id as u32, graph))
+            .collect();
+        child_build_entries(modules, entries)
     }
 
     /// Builds one ready context: its blob and index, or why it was refused.
@@ -1192,7 +1372,7 @@ mod tests {
                 "Promise.reject(new Error('late'));",
                 "an unhandled rejection",
             ),
-            ("throw new Error('broken');", "broken"),
+            ("throw new Error('secret-value');", "import threw"),
             ("await Promise.resolve();", "top-level await"),
         ];
         let modules = sources
@@ -1215,6 +1395,8 @@ mod tests {
         for (i, (source, why)) in sources.iter().enumerate() {
             let reason = &reasons[&(i as u32)];
             assert!(reason.contains(why), "{source}: {reason}");
+            // An exception's text never reaches a reason.
+            assert!(!reason.contains("secret-value"), "{source}: {reason}");
         }
     }
 
@@ -1229,6 +1411,57 @@ mod tests {
         )
         .unwrap_err();
         assert!(reason.contains("the graph has 2 modules"), "{reason}");
+    }
+
+    /// `Math.random`, `Date.now` and environment variables read at import get
+    /// what the real ops give the request: the per-push seed and time, and
+    /// the variables the observed import read.
+    #[test]
+    fn import_inputs_are_answered_like_the_ops() {
+        let seed = [7u8; 32];
+        let mut with_inputs = entry(0, &["inputs.js"]);
+        with_inputs.seed = Some(seed);
+        with_inputs.now_ms = Some(1_790_000_000_123);
+        with_inputs.env = [
+            ("FLAG".to_string(), Some("on".to_string())),
+            ("MISSING".to_string(), None),
+        ]
+        .into_iter()
+        .collect();
+        let (blob, output) = child_build_entries(
+            &[(
+                "inputs.js",
+                "const r = [Math.random(), Math.random()];\nconst t = Date.now();\nconst e = \
+                 [process.env.FLAG, process.env.MISSING ?? 'none'];\nexport function check(r0, \
+                 r1) {\nreturn [r[0] === r0, r[1] === r1, t, e.join(',')].join('|');\n}",
+            )],
+            vec![with_inputs],
+        );
+        assert_eq!(output.refused, vec![]);
+        let index = output.contexts[0].1;
+        let mut rng = ChaCha12Rng::from_seed(seed);
+        let (r0, r1): (f64, f64) = (rng.random(), rng.random());
+        with_ready_contexts(blob, index, 1, 2, |scope, graph| {
+            let r0 = v8::Number::new(scope, r0);
+            let r1 = v8::Number::new(scope, r1);
+            assert_eq!(
+                call_export(scope, graph[0], "check", &[r0.into(), r1.into()]),
+                "true|true|1790000000123|on,none"
+            );
+        });
+        // A variable the observed import did not read has no value to give.
+        let mut other = entry(0, &["other.js"]);
+        other.env = [("FLAG".to_string(), Some("on".to_string()))]
+            .into_iter()
+            .collect();
+        let (_, output) = child_build_entries(
+            &[("other.js", "export const x = process.env.OTHER;")],
+            vec![other],
+        );
+        assert!(
+            output.refused[0].1.contains("without its input"),
+            "{output:?}"
+        );
     }
 
     const WORK: &str =

@@ -113,6 +113,10 @@ pub struct UdfPhase<RT: Runtime> {
     module_loader: Arc<dyn ModuleCache<RT>>,
     preloaded: UdfPreloaded,
     component: ComponentId,
+    /// Environment variables read while importing, with what they held: a
+    /// ready context (`warm_snapshot`) built from this import is only valid
+    /// while they still hold the same.
+    import_env_reads: Vec<(EnvVarName, Option<EnvVarValue>)>,
 }
 
 enum UdfPreloaded {
@@ -177,6 +181,7 @@ impl<RT: Runtime> UdfPhase<RT> {
                 default_system_env_vars,
             },
             component,
+            import_env_reads: vec![],
         }
     }
 
@@ -560,6 +565,45 @@ impl<RT: Runtime> UdfPhase<RT> {
         &mut self,
         name: EnvVarName,
     ) -> anyhow::Result<Option<EnvVarValue>> {
+        let value = self.lookup_environment_variable(&name)?;
+        if self.phase == Phase::Importing {
+            self.import_env_reads.push((name, value.clone()));
+        }
+        Ok(value)
+    }
+
+    /// Environment variables the import read so far, in order.
+    pub fn import_env_reads(&self) -> &[(EnvVarName, Option<EnvVarValue>)] {
+        &self.import_env_reads
+    }
+
+    /// Reads a variable as an import would, with the same read dependency,
+    /// without counting it as one of this import's inputs.
+    pub fn environment_variable_for_check(
+        &mut self,
+        name: &EnvVarName,
+    ) -> anyhow::Result<Option<EnvVarValue>> {
+        self.lookup_environment_variable(name)
+    }
+
+    /// The seed of `Math.random` and the time `Date.now` returns while
+    /// importing: fixed per push by the UDF config, and the same for every
+    /// request until the next one.
+    pub fn import_seed_and_time(&self) -> Option<([u8; 32], UnixTimestamp)> {
+        match &self.preloaded {
+            UdfPreloaded::Ready {
+                rng: Some(rng),
+                unix_timestamp: Some(unix_timestamp),
+                ..
+            } if self.phase == Phase::Importing => Some((rng.get_seed(), *unix_timestamp)),
+            _ => None,
+        }
+    }
+
+    fn lookup_environment_variable(
+        &mut self,
+        name: &EnvVarName,
+    ) -> anyhow::Result<Option<EnvVarValue>> {
         let UdfPreloaded::Ready {
             ref root_env_vars,
             ref system_env_vars,
@@ -597,12 +641,12 @@ impl<RT: Runtime> UdfPhase<RT> {
                     },
                 }
             }
-            return Ok(system_env_vars.get(&name).cloned());
+            return Ok(system_env_vars.get(name).cloned());
         };
-        if let Some(var) = env_vars.get(tx, &name)? {
+        if let Some(var) = env_vars.get(tx, name)? {
             return Ok(Some(var));
         }
-        Ok(system_env_vars.get(&name).cloned())
+        Ok(system_env_vars.get(name).cloned())
     }
 
     pub fn rng(&mut self) -> anyhow::Result<&mut ChaCha12Rng> {

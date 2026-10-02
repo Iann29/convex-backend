@@ -209,6 +209,7 @@ use crate::{
     },
     warm_snapshot::{
         self,
+        ImportInputs,
         WarmEntry,
         WarmKey,
     },
@@ -432,6 +433,27 @@ impl<RT: Runtime> DatabaseUdfInnerProvider<RT> for DatabaseUdfSyscallProvider<RT
 
     async fn initialize(&mut self, timeout: &mut Timeout<RT>) -> anyhow::Result<()> {
         self.phase.initialize(timeout).await
+    }
+
+    fn import_inputs(&self) -> ImportInputs {
+        ImportInputs::new(
+            self.phase.import_env_reads(),
+            self.phase.import_seed_and_time(),
+        )
+    }
+
+    fn import_inputs_hold(&mut self, inputs: &ImportInputs) -> anyhow::Result<bool> {
+        if let Some(seed_and_time) = inputs.seed_and_time
+            && self.phase.import_seed_and_time() != Some(seed_and_time)
+        {
+            return Ok(false);
+        }
+        for (name, value) in &inputs.env {
+            if self.phase.environment_variable_for_check(name)? != *value {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     fn warm_key(&self) -> Option<WarmKey> {
@@ -696,6 +718,12 @@ pub trait DatabaseUdfInnerProvider<RT: Runtime>:
     /// `initialize` ran. `None` for system modules and for requests that do
     /// not load a source package.
     fn warm_key(&self) -> Option<WarmKey>;
+    /// What this request's import read from outside its source so far.
+    fn import_inputs(&self) -> ImportInputs;
+    /// Whether a ready context imported with `inputs` matches what this
+    /// request's import would read. Reads the variables with the same read
+    /// dependencies as an import.
+    fn import_inputs_hold(&mut self, inputs: &ImportInputs) -> anyhow::Result<bool>;
     /// If `should_capture` is false, always returns None
     async fn finish_snoop(
         &mut self,
@@ -875,6 +903,14 @@ where
                 .syscall_provider
                 .warm_key()
                 .and_then(|key| context_cache.warm_entry(&key));
+            if let Some(entry) = &warm
+                && !request_state
+                    .environment
+                    .syscall_provider
+                    .import_inputs_hold(&entry.inputs)?
+            {
+                warm = None;
+            }
         }
         let (mut isolate_context, mut context_read_set) = if args.reuse_context
             && let Some((context, module_map, read_set)) = request_state
@@ -1080,10 +1116,12 @@ where
         };
         if !reusable_context {
             metrics::log_warm_snapshot_import(warm.is_some());
-            if warm.is_none()
-                && let Some(key) = scope.state()?.environment.syscall_provider.warm_key()
-            {
-                warm_snapshot::observe(key, scope.module_map());
+            if warm.is_none() {
+                let provider = &scope.state()?.environment.syscall_provider;
+                if let Some(key) = provider.warm_key() {
+                    let inputs = provider.import_inputs();
+                    warm_snapshot::observe(key, scope.module_map(), inputs);
+                }
             }
         }
 

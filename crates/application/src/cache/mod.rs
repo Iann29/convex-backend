@@ -834,10 +834,16 @@ impl<RT: Runtime> CacheManager<RT> {
                     token,
                     visibility_info,
                 };
+                // Peers waiting on this request's precise key share its identity
+                // and journal, so the result serves them even when it is stored
+                // under the identity-free key because the query never read
+                // `ctx.auth`. Dropping the sender there sent every such peer
+                // back to the top, where it could run the query again.
                 if result.outcome.result.is_ok()
-                    && requested_key
-                        .cache_keys_after_execution(&result.outcome)
-                        .contains(key)
+                    && (*key == requested_key.precise_cache_key()
+                        || requested_key
+                            .cache_keys_after_execution(&result.outcome)
+                            .contains(key))
                 {
                     let _: Result<_, _> = sender.try_broadcast(result.clone());
                 } else {
