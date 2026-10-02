@@ -126,7 +126,8 @@ pub const BUILDER_ENV: &str = "AMAGE_WARM_SNAPSHOT_BUILDER";
 /// Prefix of the child's progress lines on stderr.
 const PROGRESS: &str = "warm-snapshot:";
 
-/// Starts the child's output on stdout: a JSON length, the JSON, the blob.
+/// Starts the child's output on stdout: the JSON length, the JSON, the blob
+/// length, the blob.
 const OUTPUT_MARKER: &[u8] = b"\0amage-warm-snapshot\0";
 
 /// Properties `RequestScope::new` installs on `Convex`, in that order.
@@ -501,6 +502,9 @@ struct EntryInput {
     now_ms: Option<u64>,
     /// What its ready context added to the last blob, if it was in one.
     cost: Option<Cost>,
+    /// In the last blob: left out last when the blob is too big.
+    #[serde(default)]
+    ready: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -567,6 +571,7 @@ fn build_in_child(plan: &[PlanEntry]) -> anyhow::Result<Built> {
             seed,
             now_ms,
             cost: entry.graph.size,
+            ready: !entry.trial,
         });
     }
     let mut input = BuildInput {
@@ -574,14 +579,17 @@ fn build_in_child(plan: &[PlanEntry]) -> anyhow::Result<Built> {
     };
     // A graph that kills the child is left out and the child runs again,
     // keeping what it decided about the others before it died; so does a
-    // child that died starting. Each run decides at least one graph.
+    // child that died starting. A kill from outside (out of time, the
+    // kernel's OOM killer) need not be the graph's fault: it is left out
+    // only if it was in progress at two of them.
     let trials = input
         .groups
         .iter()
         .flat_map(|group| &group.entries)
         .filter(|entry| entry.trial)
         .count();
-    for _ in 0..trials + 3 {
+    let mut killed = HashMap::<u32, u32>::new();
+    for _ in 0..2 * trials + 3 {
         match run_child(&input, builder_command()?)? {
             ChildOutcome::Done(output, blob) => {
                 refused.extend(output.refused);
@@ -593,10 +601,20 @@ fn build_in_child(plan: &[PlanEntry]) -> anyhow::Result<Built> {
                     stand_ins: output.stand_ins,
                 });
             },
-            ChildOutcome::DiedOn { id, why, ok, no } => {
-                refused.push((id, format!("the builder died on it ({why})")));
+            ChildOutcome::DiedOn {
+                id,
+                why,
+                ok,
+                no,
+                killed: from_outside,
+            } => {
                 let mut gone = no.iter().map(|(id, _)| *id).collect::<HashSet<_>>();
-                gone.insert(id);
+                let times = killed.entry(id).or_default();
+                *times += 1;
+                if !from_outside || *times >= 2 {
+                    refused.push((id, format!("the builder died on it ({why})")));
+                    gone.insert(id);
+                }
                 refused.extend(no);
                 for group in &mut input.groups {
                     group.entries.retain(|e| !gone.contains(&e.id));
@@ -620,12 +638,13 @@ fn build_in_child(plan: &[PlanEntry]) -> anyhow::Result<Built> {
 enum ChildOutcome {
     Done(BuildOutput, Vec<u8>),
     /// On the graph `id`, after accepting the graphs in `ok` and refusing
-    /// those in `no`.
+    /// those in `no`; `killed` from outside (out of time, out of memory).
     DiedOn {
         id: u32,
         why: String,
         ok: HashMap<u32, Cost>,
         no: Vec<(u32, String)>,
+        killed: bool,
     },
     /// Before it had its input: nothing about the graphs. A process can
     /// abort that early on its own, for instance in `fastant`'s clock
@@ -645,18 +664,41 @@ fn child_input(input: &BuildInput) -> anyhow::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn parse_output(output: &[u8]) -> anyhow::Result<(BuildOutput, Vec<u8>)> {
-    let start = output
-        .windows(OUTPUT_MARKER.len())
-        .position(|w| w == OUTPUT_MARKER)
-        .context("the builder wrote no output")?
-        + OUTPUT_MARKER.len();
-    let output = &output[start..];
-    anyhow::ensure!(output.len() >= 8, "the builder output is cut");
-    let json_len = u64::from_le_bytes(output[..8].try_into()?) as usize;
-    anyhow::ensure!(output.len() >= 8 + json_len, "the builder output is cut");
-    let built = serde_json::from_slice(&output[8..8 + json_len])?;
-    Ok((built, output[8 + json_len..].to_vec()))
+/// Reads the child's output (after whatever a test harness prints first),
+/// with the blob read into a buffer of its size: the backend holds the
+/// current blob while it reads the next, and a copy would make three.
+fn read_output(mut stdout: impl Read) -> anyhow::Result<(BuildOutput, Vec<u8>)> {
+    let word = |bytes: &[u8], at: usize| -> Option<usize> {
+        Some(u64::from_le_bytes(bytes.get(at..at + 8)?.try_into().ok()?) as usize)
+    };
+    let mut head = vec![];
+    let mut chunk = vec![0u8; 64 << 10];
+    let (json, blob_len) = loop {
+        if let Some(at) = head
+            .windows(OUTPUT_MARKER.len())
+            .position(|w| w == OUTPUT_MARKER)
+        {
+            let start = at + OUTPUT_MARKER.len();
+            if let Some(json_len) = word(&head, start)
+                && let Some(blob_len) = word(&head, start + 8 + json_len)
+            {
+                break (start + 8..start + 8 + json_len, blob_len);
+            }
+        }
+        let read = stdout.read(&mut chunk)?;
+        anyhow::ensure!(read > 0, "the builder output is cut");
+        head.extend_from_slice(&chunk[..read]);
+    };
+    let built = serde_json::from_slice(&head[json.clone()])?;
+    let mut blob = Vec::with_capacity(blob_len);
+    blob.extend_from_slice(&head[json.end + 8..]);
+    drop(head);
+    let rest = blob_len
+        .checked_sub(blob.len())
+        .context("the builder wrote too much")?;
+    stdout.take(rest as u64).read_to_end(&mut blob)?;
+    anyhow::ensure!(blob.len() == blob_len, "the builder output is cut");
+    Ok((built, blob))
 }
 
 /// The current executable, which `main` turns into the builder.
@@ -679,8 +721,10 @@ fn run_child(input: &BuildInput, mut command: Command) -> anyhow::Result<ChildOu
     let writer = std::thread::spawn(move || stdin.write_all(&bytes));
     let mut stdout = child.stdout.take().context("child stdout")?;
     let output = std::thread::spawn(move || {
-        let mut bytes = vec![];
-        stdout.read_to_end(&mut bytes).map(|_| bytes)
+        let output = read_output(&mut stdout);
+        // Whatever is left, so the child never blocks writing it.
+        let _ = std::io::copy(&mut stdout, &mut std::io::sink());
+        output
     });
     let stderr = child.stderr.take().context("child stderr")?;
     let progress = std::thread::spawn(move || {
@@ -693,7 +737,9 @@ fn run_child(input: &BuildInput, mut command: Command) -> anyhow::Result<ChildOu
         }
         (lines, last)
     });
-    let deadline = Instant::now() + *AMAGE_WARM_SNAPSHOT_TIMEOUT;
+    // The child has a budget of CPU time (`run_builder`); this is the backstop,
+    // generous because at nice 10 it may get little of a busy host.
+    let deadline = Instant::now() + *AMAGE_WARM_SNAPSHOT_TIMEOUT * 4;
     let status = loop {
         if let Some(status) = child.try_wait()? {
             break Some(status);
@@ -707,10 +753,12 @@ fn run_child(input: &BuildInput, mut command: Command) -> anyhow::Result<ChildOu
     };
     // A child that died early leaves the writer with a broken pipe.
     let _ = writer.join();
-    let output = output.join().unwrap_or_else(|_| Ok(vec![]))?;
+    let output = output
+        .join()
+        .unwrap_or_else(|_| Err(anyhow::anyhow!("the output reader panicked")));
     let (lines, last_error) = progress.join().unwrap_or_default();
     if status.is_some_and(|s| s.success()) {
-        let (built, blob) = parse_output(&output)?;
+        let (built, blob) = output?;
         return Ok(ChildOutcome::Done(built, blob));
     }
     // The child's own last words go to the log only as their kind: what V8
@@ -748,8 +796,19 @@ fn run_child(input: &BuildInput, mut command: Command) -> anyhow::Result<ChildOu
             _ => (),
         }
     }
+    // Out of wall-clock time, out of CPU time (SIGXCPU), or SIGKILL.
+    let killed = status.is_none_or(|status| {
+        use std::os::unix::process::ExitStatusExt;
+        matches!(status.signal(), Some(9 | 24))
+    });
     Ok(match trying {
-        Some(id) => ChildOutcome::DiedOn { id, why, ok, no },
+        Some(id) => ChildOutcome::DiedOn {
+            id,
+            why,
+            ok,
+            no,
+            killed,
+        },
         None => ChildOutcome::Failed(why),
     })
 }
@@ -774,8 +833,19 @@ fn run_builder() -> anyhow::Result<()> {
     // priority.
     #[cfg(target_os = "linux")]
     {
-        // SAFETY: lowers this thread's own priority.
-        unsafe { libc::setpriority(libc::PRIO_PROCESS, 0, 10) };
+        // SAFETY: lowers this thread's own priority, and limits this
+        // process's CPU time (SIGXCPU past it).
+        unsafe {
+            libc::setpriority(libc::PRIO_PROCESS, 0, 10);
+            let seconds = AMAGE_WARM_SNAPSHOT_TIMEOUT.as_secs() as libc::rlim_t;
+            libc::setrlimit(
+                libc::RLIMIT_CPU,
+                &libc::rlimit {
+                    rlim_cur: seconds,
+                    rlim_max: seconds + 10,
+                },
+            );
+        }
         let _ = std::fs::write("/proc/self/oom_score_adj", "1000");
     }
     // V8 shares one read-only heap among all isolates of a process, set up
@@ -783,8 +853,11 @@ fn run_builder() -> anyhow::Result<()> {
     // its read-only part exactly as the parent's runtime snapshot does. A
     // snapshot creator normally keeps read-only space open and promotes
     // objects into it when it serializes; sealed, the blob keeps the base's
-    // read-only part. Must precede V8's initialization.
-    v8::V8::set_flags_from_string("--no-extensible-ro-snapshot");
+    // read-only part. Natives syntax lets the builder make the holders of
+    // V8's additions fast again (`unguard_additions`); it changes nothing
+    // for code that compiles without it, and V8 checks flags only against
+    // code caches, not startup blobs. Must precede V8's initialization.
+    v8::V8::set_flags_from_string("--no-extensible-ro-snapshot --allow-natives-syntax");
     crate::client::initialize_v8();
     let mut bytes = vec![];
     std::io::stdin().read_to_end(&mut bytes)?;
@@ -822,6 +895,12 @@ fn run_builder() -> anyhow::Result<()> {
             }
             writeln!(out, "{PROGRESS} try {}", entry.id)?;
             out.flush()?;
+            // A test kills the child here, as the OOM killer would.
+            #[cfg(test)]
+            if std::env::var_os(tests::KILL_ON_TRIAL).is_some() {
+                // SAFETY: signals this process.
+                unsafe { libc::kill(libc::getpid(), libc::SIGKILL) };
+            }
             let Blob {
                 bytes: blob,
                 contexts,
@@ -884,24 +963,44 @@ fn run_builder() -> anyhow::Result<()> {
         let Err(reason) = fits_together(size) else {
             break blob;
         };
+        // New graphs go first, heaviest first, until what they added on
+        // their own covers the excess; then one build checks.
+        let over_shared = size.shared > *AMAGE_WARM_SNAPSHOT_MAX_SHARED_BYTES;
+        let excess = if over_shared {
+            size.shared - *AMAGE_WARM_SNAPSHOT_MAX_SHARED_BYTES
+        } else {
+            size.total.saturating_sub(*AMAGE_WARM_SNAPSHOT_MAX_BYTES)
+        };
         let weight = |id: u32| {
             let cost = costs.get(&id).copied().unwrap_or_default();
-            if size.shared > *AMAGE_WARM_SNAPSHOT_MAX_SHARED_BYTES {
+            if over_shared {
                 cost.shared
             } else {
                 cost.total
             }
         };
-        let Some(out) = accepted
-            .iter()
-            .enumerate()
-            .max_by_key(|(_, (_, entry))| (entry.trial, weight(entry.id)))
-            .map(|(i, _)| i)
-        else {
+        let mut order = (0..accepted.len()).collect::<Vec<_>>();
+        order.sort_by_key(|&i| {
+            let entry = accepted[i].1;
+            (entry.ready, std::cmp::Reverse(weight(entry.id)))
+        });
+        let mut out = vec![];
+        let mut freed = 0;
+        for i in order {
+            if freed >= excess && !out.is_empty() {
+                break;
+            }
+            freed += weight(accepted[i].1.id);
+            out.push(i);
+        }
+        if out.is_empty() {
             break blob;
-        };
-        let (_, entry) = accepted.remove(out);
-        refused.push((entry.id, format!("{reason:#}")));
+        }
+        out.sort_unstable_by(|a, b| b.cmp(a));
+        for i in out {
+            let (_, entry) = accepted.remove(i);
+            refused.push((entry.id, format!("{reason:#}")));
+        }
     };
     refused.extend(no);
     // The whole blob too, before the backend loads it.
@@ -928,6 +1027,7 @@ fn run_builder() -> anyhow::Result<()> {
     stdout.write_all(OUTPUT_MARKER)?;
     stdout.write_all(&(json.len() as u64).to_le_bytes())?;
     stdout.write_all(&json)?;
+    stdout.write_all(&(blob.len() as u64).to_le_bytes())?;
     stdout.write_all(&blob)?;
     stdout.flush()?;
     Ok(())
@@ -1015,18 +1115,10 @@ fn open_contexts(
         )
     };
     let result = (|| {
-        // The backend makes an isolate again when less than this is left
-        // after a request (`Isolate::check_isolate_clean`).
-        let available = isolate.get_heap_statistics().total_available_size();
-        anyhow::ensure!(
-            available >= *ISOLATE_MAX_USER_HEAP_SIZE,
-            "an isolate made from the blob starts with {} MiB of heap left, less than {} MiB",
-            available >> 20,
-            *ISOLATE_MAX_USER_HEAP_SIZE >> 20
-        );
-        // One at a time, as requests do: what one context holds is garbage
-        // before the next is opened.
+        // One at a time, as requests do.
         for (id, index) in contexts {
+            // What the previous one held is garbage by now.
+            isolate.low_memory_notification();
             scope!(let scope, &mut isolate);
             let context = v8::Context::from_snapshot(scope, *index, v8::ContextOptions::default())
                 .with_context(|| format!("context {index}"))?;
@@ -1040,6 +1132,16 @@ fn open_contexts(
                     "module {i} of context {index} is not evaluated"
                 );
             }
+            // The backend makes an isolate again when less than this is left
+            // after a request (`Isolate::check_isolate_clean`): with the blob's
+            // startup part and this context, it would on every request.
+            let available = scope.get_heap_statistics().total_available_size();
+            anyhow::ensure!(
+                available >= *ISOLATE_MAX_USER_HEAP_SIZE,
+                "with its ready context open, an isolate has {} MiB of heap left, less than {} MiB",
+                available >> 20,
+                *ISOLATE_MAX_USER_HEAP_SIZE >> 20
+            );
         }
         Ok(())
     })();
@@ -1068,8 +1170,7 @@ thread_local! {
     /// The stand-ins of the context importing now, by name. Held here, not
     /// in the guards: V8 keeps a template's instances in the context, so
     /// template and accessor data must not point into one.
-    static STAND_INS: RefCell<HashMap<String, (v8::Global<v8::Function>, String)>> =
-        RefCell::new(HashMap::new());
+    static STAND_INS: RefCell<HashMap<String, StandIn>> = RefCell::new(HashMap::new());
     /// The paths of the stand-ins the import running now took.
     static TOOK: RefCell<BTreeSet<String>> = const { RefCell::new(BTreeSet::new()) };
 }
@@ -1887,10 +1988,13 @@ fn guard_additions<'s, 'a>(
                             steps: holder.path.clone(),
                             key: added.key.clone(),
                         };
-                        let path = serde_json::to_string(&path)?;
-                        let function = stand_in(scope, &path, name, *length)?;
-                        let function = v8::Global::new(scope, function);
-                        STAND_INS.with(|s| s.borrow_mut().insert(what.clone(), (function, path)));
+                        let stand_in = StandIn {
+                            function: None,
+                            path: serde_json::to_string(&path)?,
+                            name: name.clone(),
+                            length: *length,
+                        };
+                        STAND_INS.with(|s| s.borrow_mut().insert(what.clone(), stand_in));
                     }
                     // Configurable, so it can be taken out again.
                     let attributes = Attributes {
@@ -2006,7 +2110,28 @@ fn unguard_additions<'s>(
             }
         }
     }
+    // A guard is an API accessor, and V8 turns the object that gets one into
+    // a dictionary of properties. Prototypes become fast again on their own
+    // when used; `Math`, `Promise`, `Error` and the rest would stay slow in
+    // every ready context (3% in a hot loop over them).
+    let fast = fast_properties(scope).context("fast properties")?;
+    for GuardedHolder { object, holder, .. } in &guarded.holders {
+        if !holder.path.is_empty() {
+            fast.call(scope, undefined.into(), &[(*object).into()])
+                .context("fast properties")?;
+        }
+    }
     Ok(())
+}
+
+/// `%ToFastProperties`, callable thanks to the builder's natives syntax.
+fn fast_properties<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+) -> anyhow::Result<v8::Local<'s, v8::Function>> {
+    let code =
+        v8::String::new(scope, "(function (o) { %ToFastProperties(o); })").context("code")?;
+    let script = v8::Script::compile(scope, code, None).context("compile")?;
+    Ok(script.run(scope).context("run")?.try_into()?)
 }
 
 /// Getter of a guarded addition. While the builder imports, it gives a
@@ -2024,11 +2149,29 @@ pub(crate) fn guard_get<'s>(
         return;
     }
     let what = args.data().to_rust_string_lossy(scope);
-    if let Some((stand_in, path)) = STAND_INS.with(|s| s.borrow().get(&what).cloned()) {
+    if let Some(stand_in) = STAND_INS.with(|s| s.borrow().get(&what).cloned()) {
+        // Made the first time an import reads it.
+        let function = match stand_in.function {
+            Some(function) => v8::Local::new(scope, function),
+            None => {
+                let Ok(function) =
+                    self::stand_in(scope, &stand_in.path, &stand_in.name, stand_in.length)
+                else {
+                    return;
+                };
+                let global = v8::Global::new(scope, function);
+                STAND_INS.with(|s| {
+                    if let Some(entry) = s.borrow_mut().get_mut(&what) {
+                        entry.function = Some(global);
+                    }
+                });
+                function
+            },
+        };
         if PROBING.get() {
-            TOOK.with(|took| took.borrow_mut().insert(path));
+            TOOK.with(|took| took.borrow_mut().insert(stand_in.path));
         }
-        rv.set(v8::Local::new(scope, stand_in).into());
+        rv.set(function.into());
     } else if PROBING.get() {
         VIOLATIONS.with(|v| v.borrow_mut().push(format!("built-in {what}")));
     }
@@ -2045,6 +2188,16 @@ pub(crate) fn guard_set<'s>(
         let what = args.data().to_rust_string_lossy(scope);
         VIOLATIONS.with(|v| v.borrow_mut().push(format!("built-in {what}")));
     }
+}
+
+/// A method's stand-in in the context importing now.
+#[derive(Clone)]
+struct StandIn {
+    function: Option<v8::Global<v8::Function>>,
+    /// Its [`StandInPath`], as JSON.
+    path: String,
+    name: String,
+    length: i32,
 }
 
 /// Where a stand-in finds V8's own function.
@@ -2342,6 +2495,7 @@ mod tests {
             seed: None,
             now_ms: None,
             cost: None,
+            ready: false,
         }
     }
 
@@ -2406,7 +2560,7 @@ mod tests {
             }
             written.unwrap();
             assert!(status.success(), "builder child failed: {status}");
-            let (built, blob) = super::parse_output(&output).unwrap();
+            let (built, blob) = super::read_output(&output[..]).unwrap();
             return (blob, built);
         }
         panic!("the builder child kept dying");
@@ -2887,6 +3041,75 @@ mod tests {
         });
     }
 
+    /// Known limit, ignored until V8 changes: a number field of an object
+    /// made at import, stored as a double, is a box that V8 puts in the
+    /// blob's startup part, which every context of an isolate shares, and V8
+    /// writes the box in place. A request that changes such a field changes
+    /// it for the next request on the same isolate. The fix is in V8: keep
+    /// HeapNumbers out of `ContextSerializer::ShouldBeInTheStartupObjectCache`.
+    #[test]
+    #[ignore]
+    fn double_fields_made_at_import_start_fresh_in_every_request() {
+        let (blob, index) = build_one(
+            &[(
+                "stats.js",
+                "const stats = { at: 1790000000123.5 };\nclass P { #p = 0.75; bump() { return \
+                 (this.#p += 1); } }\nconst p = new P();\nexport function bump() { stats.at += 1; \
+                 return [stats.at, p.bump()].join(','); }",
+            )],
+            &["stats.js"],
+        )
+        .unwrap();
+        with_ready_contexts(blob, index, 1, 3, |scope, graph| {
+            assert_eq!(
+                call_export(scope, graph[0], "bump", &[]),
+                "1790000000124.5,1.75"
+            );
+        });
+    }
+
+    pub(super) const KILL_ON_TRIAL: &str = "AMAGE_WARM_SNAPSHOT_TEST_KILL_ON_TRIAL";
+
+    /// A child killed from outside (out of memory, out of time) need not be
+    /// the fault of the graph it was trying: the parent sees it as killed,
+    /// and leaves the graph out only after a second time.
+    #[test]
+    fn a_child_killed_from_outside_is_told_apart() {
+        crate::client::initialize_v8();
+        let input = BuildInput {
+            groups: vec![GroupInput {
+                modules: [(
+                    "convex:/plain.js".to_string(),
+                    "export const x = 1;".to_string(),
+                )]
+                .into_iter()
+                .collect(),
+                entries: vec![entry(3, &["plain.js"])],
+            }],
+        };
+        for _ in 0..4 {
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "warm_snapshot::tests::builder_child",
+                    "--test-threads=1",
+                ])
+                .env(KILL_ON_TRIAL, "1");
+            match super::run_child(&input, command).unwrap() {
+                super::ChildOutcome::DiedOn { id, killed, .. } => {
+                    assert_eq!(id, 3);
+                    assert!(killed);
+                    return;
+                },
+                super::ChildOutcome::DiedStarting(_) => continue,
+                super::ChildOutcome::Done(output, _) => panic!("built: {output:?}"),
+                super::ChildOutcome::Failed(why) => panic!("failed: {why}"),
+            }
+        }
+        panic!("the builder child kept dying starting");
+    }
+
     pub(super) const LET_SEALED_THROUGH: &str = "AMAGE_WARM_SNAPSHOT_TEST_LET_SEALED_THROUGH";
 
     /// A ready context V8 cannot set up again aborts the child that opens it
@@ -2917,8 +3140,10 @@ mod tests {
                 ])
                 .env(LET_SEALED_THROUGH, "1");
             match super::run_child(&input, command).unwrap() {
-                super::ChildOutcome::DiedOn { id, .. } => {
+                super::ChildOutcome::DiedOn { id, killed, .. } => {
                     assert_eq!(id, 7);
+                    // V8 aborting is the graph's fault.
+                    assert!(!killed);
                     return;
                 },
                 super::ChildOutcome::DiedStarting(_) => continue,
