@@ -884,3 +884,189 @@ registrado é o do laboratório Bendvex (`tools/c7_e2e.py` e
 `tests/c7_bypass.py` contra esta tag). A primeira imagem C7
 (`…-cfbb0ffd9312`, protocolo v1) continua existindo apenas como histórico;
 CLIs v1 são recusadas por este backend com `VerifiedDeployRequired`.
+
+# Candidata 8 — Convex sobre Turso e contextos prontos (`8-turso`)
+
+Imagem **local e não publicada** (`published: false` no
+[manifesto C8](amage-candidate8.json); nenhum `docker push`, nenhum digest de
+registry). A C8 parte da C7 hardening (`d08adecb7`, `c7Reference`) e acrescenta
+uma persistência sobre `turso_core` 0.8.1 que abre o mesmo `db.sqlite3`, o
+SQLite em WAL, contextos prontos do V8 para queries, mutations, actions e HTTP
+actions, e caches que deixam de reler o app a cada chamada. A evidência
+(medições, logs, scripts) fica na pasta da investigação
+`20260929-candidate8-turso/`, não neste repositório; os caminhos citados abaixo
+são relativos a ela.
+
+## Identidade (de `amage-candidate8.json`)
+
+| Campo | Valor |
+|---|---|
+| base upstream / referência C7 | `849a6fc605b5a910c9834b61a77c5475cc24d189` / `d08adecb7` |
+| `variant` / `protocol` | `8-turso` / `amage.verified-deploy/2` (o gate da C7, sem mudança) |
+| árvore construída | `165f78b94` com `crates/isolate/src/warm_snapshot.rs` modificado (`buildTreeDirty`); a modificação é o commit `5e12a347a`, que reproduz o hash do patch da imagem |
+| `version` | `amage-20261001-candidate.8-turso+base.849a6fc605b5.patch.a994fb509e4c` |
+| `image` (tag local) | `amage-convex-backend:amage-20261001-candidate.8-turso-a994fb509e4c` |
+| `imageId` = `amd64ManifestDigest` | `sha256:283c1b08cc55612e012996b9e8a7d3e06c3422dd9d19b2a1ab9ba5f0f1e2e026` |
+| `configDigest` | `sha256:8d9a8be922d59b357924d6981b63879d3400bfb4428a893efcbe0b7cc845b2cc` |
+| `binarySha256` (`/convex/convex-local-backend`) | `7be31736cb4fb0dfd8781ef64bf0e74e952a07886b9fbe2523ddb3b49db50b0f` |
+| `patchSha256` (`a/ b/`) | `a994fb509e4c0fa95333855730652755d3072e4d8125ff5eac2d812c48d2604f` |
+| `patchSha256MnemonicPrefixes` (`c/ i/`) | `16dc9c1f5e573a2ac7db8e97618ab3d31b88cf0faba2ecb06eb3bbcc23f5864e` |
+| `platform` / `builtAt` | `linux/amd64` / `2026-10-02T04:37:59-03:00` |
+| aceite | `test-candidate.mjs` passou em sqlite, postgres e turso (`bench/vps/acceptance-C8w.log`) |
+
+`patchPaths` ganha `crates_vendor` (a cópia do `turso_core`); o resto é o da C7.
+
+## O que mudou (C7 `d08adecb7` → `5e12a347a`)
+
+Fora `crates_vendor` e `Cargo.lock`: 50 arquivos, +11.250/−292, dos quais cerca
+de 3.600 linhas são testes (63 testes novos). `crates_vendor/turso_core` é o
+`turso_core` 0.8.1 do crates.io (299 arquivos), ligado por `[patch.crates-io]`,
+com +73/−4 em `storage/pager.rs` e `storage/wal.rs`.
+
+| Onde | Mudança |
+|---|---|
+| `crates/turso_persistence` (novo) | persistência do Convex sobre `turso_core`, sem o crate `turso`; mesmo arquivo, WAL; um escritor com faixas (o commit passa à frente da retenção, que cede a vez por até 100 ms) e um pool de leitores que deixa um livre para buscas pontuais; scan de índice sem subconsulta correlacionada; manutenção do WAL com portão; o SQLite recupera o WAL de uma queda antes de o Turso abrir; um arquivo só abre uma vez por processo |
+| `crates_vendor/turso_core` | o cache de páginas descarta só as páginas com frame novo no WAL (`Wal::changed_pages`, `Pager::invalidate_changed_pages`); geração nova do WAL ainda limpa o cache inteiro |
+| `crates/sqlite` | WAL com `synchronous=full` por padrão; scan sem subconsulta correlacionada |
+| `crates/db_connection` | escolha do motor; com Turso, a concorrência padrão de consultas é 2 × CPUs (entre 4 e 16) |
+| `crates/isolate` | contextos prontos (`warm_snapshot.rs`, abaixo); o lote de syscalls de leitura roda segurando o permit; `environment/component_cache.rs` guarda o source package mais recente e as exportações dos componentes pelos carimbos de `_modules` e `_source_packages`; as actions guardam o mapa de módulos de cada componente por source package |
+| `crates/application` | quem espera a chave precisa de uma query recebe o resultado guardado sob a chave sem identidade (a query não leu `ctx.auth`), em vez de tentar de novo |
+| `crates/indexing`, `database`, `function_runner` | a transação pergunta quando um índice em memória mudou pela última vez (`InMemoryIndexes::last_modified`) |
+| `crates/value/src/json` | decodificador de uma passada do JSON interno para `ConvexValue`, sem a árvore `serde_json::Value` intermediária |
+| `crates/local_backend` | jemalloc como alocador global (`background_thread:true`); SIGTERM encerra o processo (antes o `docker stop` esperava 10 s pelo SIGKILL) |
+| `crates/common/src/knobs.rs` | `INDEX_CACHE_VERIFY_PERCENT` passa de 100 para 1; as variáveis abaixo |
+| `crates/cmd_util` | camada do Sentry filtrada em INFO (sem o filtro, `enabled!(TRACE)` era verdadeiro no backend inteiro) |
+| `self-hosted/docker-build/Dockerfile.backend` | copia `crates_vendor` antes do `cargo chef cook`, cuja receita só cobre os membros do workspace |
+
+### Contextos prontos
+
+Depois que um módulo de query ou mutation é importado num contexto novo, o
+backend monta o grafo de módulos num snapshot do V8 num **processo filho** (o
+próprio binário, com `AMAGE_WARM_SNAPSHOT_BUILDER`): um abort do V8 derruba só
+o filho e deixa aquele grafo de fora. As requisições seguintes do mesmo source
+package desserializam o contexto pronto em vez de importar de novo.
+
+- A importação no filho roda sob uma sonda que só responde
+  `environmentVariables/get`, `random` e `now` (com o que a importação observada
+  leu), `textEncoder` e `normalizeLabel`; qualquer outra op ou syscall, promise
+  pendente ou rejeição não tratada recusa o grafo. A requisição só usa o
+  contexto pronto enquanto essas variáveis, a semente e a hora continuam valendo.
+- Num snapshot creator, o V8 pula o que instala em cada contexto novo
+  (`InitializeExperimentalGlobal`, `InstallSpecialObjects`) e reinstala ao
+  desserializar, abortando se o dono não aceita propriedade nova. O filho
+  descobre essas adições comparando com um isolate normal e as coloca durante a
+  importação: primitivos com o valor real; métodos como substitutos de mesmo
+  nome e aridade, que recusam o grafo se chamados na importação; o resto como
+  guarda que recusa se tocada. Depois confere que a importação não mexeu nelas
+  nem nos donos e as tira antes de serializar. Sem isso, um `Object.freeze(Math)`
+  na importação derrubava o backend.
+- Antes de entregar o blob, o filho abre cada contexto num isolate com o heap do
+  backend, um por vez: um contexto que o V8 não consegue abrir mata o filho, não
+  o backend.
+- O filho roda com `nice 10`, `oom_score_adj 1000` e limite de CPU; as montagens
+  descansam o dobro do tempo da anterior; depois de duas montagens falhas
+  seguidas, os grafos novos ficam de fora.
+- Os donos das adições voltam ao modo rápido (`%ToFastProperties`, só no filho,
+  com `--allow-natives-syntax`). Código pesado em `Math` roda cerca de 3× mais
+  rápido que num contexto novo, onde o `delete Math.random` do runtime deixa
+  `Math` em modo dicionário.
+
+## Variáveis de ambiente
+
+| Variável | Padrão | Efeito |
+|---|---|---|
+| `CONVEX_SQLITE_ENGINE` | `rusqlite` | `turso` abre o mesmo `db.sqlite3` com a persistência Turso; voltar para `rusqlite`, ou para a C6/C7, lê o mesmo arquivo |
+| `CONVEX_SQLITE_JOURNAL_MODE` | `wal` | `delete` volta ao journal da C7 (só rusqlite; o Turso exige WAL) |
+| `CONVEX_SQLITE_SYNCHRONOUS` | `full` | `normal` só com WAL |
+| `CONVEX_TURSO_READERS` | CPUs − 1, entre 1 e 4 | leitores do Turso |
+| `CONVEX_TURSO_CACHE_KIB` | 16384 | cache de páginas por conexão do Turso |
+| `APPLICATION_MAX_CONCURRENT_QUERIES` | 16; com Turso, 2 × CPUs (entre 4 e 16) | consultas simultâneas |
+| `INDEX_CACHE_VERIFY_PERCENT` | 1 (era 100) | parcela dos acertos do cache de índice relida da persistência; divergência é panic |
+| `AMAGE_WARM_SNAPSHOT` | `true` | `false` desliga os contextos prontos (chave de emergência) |
+| `AMAGE_WARM_SNAPSHOT_MAX_MODULES` | 128 | grafos no blob |
+| `AMAGE_WARM_SNAPSHOT_MAX_CONTEXT_MIB` | 32 | teto por contexto |
+| `AMAGE_WARM_SNAPSHOT_MAX_MIB` | 128 | teto do blob, que o backend guarda em memória (duas gerações durante a troca) |
+| `AMAGE_WARM_SNAPSHOT_MAX_SHARED_MIB` | 16 | teto da parte que todo isolate carrega ao nascer (textos, scripts e bytecode), que conta no heap do isolate |
+| `AMAGE_WARM_SNAPSHOT_DELAY_MS` | 2000 | espera antes de montar, para juntar os primeiros pedidos depois de um start ou push |
+| `AMAGE_WARM_SNAPSHOT_TIMEOUT_SECONDS` | 120 | tempo de CPU do filho (o relógio de parede vai a 4×) |
+
+## Medições
+
+VPS de laboratório, backend fixado em 4 vCPUs, cliente em vCPUs próprias,
+repetições alternadas. A C8 destas linhas é a C8g (E8) ou a C8k (app de
+atendimento); as candidatas seguintes foram comparadas em A/B na mesma carga,
+sem regressão (`bench/vps/c8t-ab.txt` a `c8w-ab.txt`). No E8 os dois lados
+rodam com `experimental_reuseContext`; no app de atendimento, nenhum.
+
+| Medida | C6 | C8 · Turso | Fonte |
+|---|---|---|---|
+| leituras/s, 16 leitores + 1 gravador | 391–407 | 515–547 | `bench/vps/e8-c6-c8g.txt` |
+| escritas/s, 16 leitores + 8 gravadores | 75–77 | 140–154 | idem |
+| escrita p50, 16 leitores + 1 gravador | 63–66 ms | 23–24 ms | idem |
+| memória de pico do backend | 318–322 MB | 438–460 MB | idem |
+| app de atendimento, 300 leituras + 60 mensagens/s, 500 telas ao vivo: leituras entregues | 114–149/s | 297–298/s | `bench/vps/v2-tail.txt` (C6), `c8k-ab.txt` (C8) |
+| mesma carga: mensagem na tela, p50 | 861–1166 ms | 39–56 ms | idem |
+
+No código de um app real (uze.ai, laptop, backend reiniciado depois do deploy),
+com chamadas sem login, que medem a parte fixa de cada chamada: de 3 a 18 ms a
+menos por chamada (`bench/e12-uze-today-restart.txt` ×
+`bench/e12-uze-c8w-local-restart.txt`).
+
+## Robustez
+
+| Prova | Resultado | Evidência |
+|---|---|---|
+| aceite `test-candidate.mjs` | passou em sqlite, postgres e turso em cada candidata aceita | `bench/vps/acceptance-C8*.log` |
+| queda de energia (dm-log-writes), variante turso | 3 sessões, 202 pontos de corte, 0 falhas | `bench/vps/powerloss/` |
+| processo morto no meio das escritas | 40/40, `integrity_check` ok | `e2e/run-crash.sh`, `bench/crash-*.txt` |
+| ida e volta C6 ↔ C8, com `kill -9` da C8 sob carga | 0 documento perdido, `integrity_check` ok | `bench/vps/e19-roundtrip.txt` |
+| env a cada 10 s e deploy a cada 60 s sob carga pesada | 0 resposta velha | `bench/vps/e15-c8w.txt` |
+| matriz de semântica, contexto pronto × contexto novo | 22/22 idênticas | `scratch/e14-semantics/run16.sh` |
+| deploys de todo tipo | 49/49 na primeira chamada | README da evidência (E17) |
+| 45 min de carga pesada | sem deriva de latência nem de memória | `bench/vps/e18-c8u.txt` |
+| memória do escopo limitada a 650 MB | o kernel mata o filho, não o backend (3/3) | `bench/e23-oom-c8v.txt` |
+
+Testes automáticos: `cargo test -p turso_persistence`, `-p sqlite`, `-p value`
+e `-p isolate warm_snapshot`.
+
+## Limites conhecidos
+
+- **Número decimal em campo de objeto criado na importação.** O V8 guarda a
+  caixa desse número na parte do blob que todo isolate carrega e escreve nela no
+  lugar: se uma requisição muda o campo, a próxima requisição no mesmo isolate vê
+  o valor mudado. O teste ignorado
+  `double_fields_made_at_import_start_fresh_in_every_request` reproduz. A
+  correção é no V8 (tirar `HeapNumber` de
+  `ContextSerializer::ShouldBeInTheStartupObjectCache`) e exige compilar o V8;
+  não está nesta imagem.
+- Um substituto guardado pela importação chama a função certa, mas não é o
+  mesmo objeto da função do V8 (`guardado === Uint8Array.fromBase64` é `false`).
+- A parte do blob que todo isolate carrega custa memória por isolate (7 MiB no
+  uze.ai).
+- Sob troca de variável a cada 10 s, a mediana da entrega piora: os isolates
+  são recriados a cada geração do blob.
+- Componentes criados num deploy só entram nos índices em memória no restart
+  (comportamento do upstream); até lá, o cache por carimbo não vale para eles.
+- `turso_core` 0.8.1 é jovem, e a cópia em `crates_vendor` é atualizada à mão.
+
+## Como construir e conferir
+
+`self-hosted/build-candidate8.sh`, com as mesmas opções do script da C7
+(`CANDIDATE_DATE`, `ALLOW_DIRTY`, `SKIP_BUILD`) e `CARGO_BUILD_JOBS`. Hash do
+patch reproduzível:
+
+```bash
+git diff --binary --no-ext-diff --no-color --src-prefix=a/ --dst-prefix=b/ \
+  --abbrev=9 849a6fc605b5a910c9834b61a77c5475cc24d189 5e12a347a \
+  -- crates crates_vendor Cargo.toml Cargo.lock self-hosted/docker-build rust-toolchain .cargo \
+  | sha256sum
+```
+
+Resultado: `a994fb509e4c0fa95333855730652755d3072e4d8125ff5eac2d812c48d2604f`
+(reproduzido em 02/10/2026; label `org.amage.patch-sha256` e sufixo da versão).
+
+## Estado
+
+Imagem local, sem publicação, sem entrada no catálogo do Synapse; nenhum
+deployment roda a C8. Antes de produção: decidir a correção do V8 acima,
+publicar a imagem e passar o primeiro app por uma sandbox com cópia dos dados.
