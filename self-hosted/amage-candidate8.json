@@ -22,41 +22,56 @@
   "patchCommit": "d08adecb7",
   "variant": "8-turso",
   "published": false,
-  "notes": "C8 = C7 (c7Reference) + crates/turso_persistence (Convex persistence on turso_core 0.8.1, same db.sqlite3 file, WAL, one writer with commit/retention lanes + reader pool that keeps one reader for point lookups, index scan without correlated subquery, gated WAL maintenance, SQLite recovers a crash WAL before Turso opens), CONVEX_SQLITE_ENGINE=rusqlite|turso (default rusqlite); crates_vendor/turso_core = turso_core 0.8.1 with page-cache invalidation by page instead of a full clear on every change (snapshots/turso_core-0.8.1-granular-cache.patch in the evidence folder), wired with [patch.crates-io]; isolate: a read syscall batch runs holding the concurrency permit and heap stats refresh every 16 turns; local_backend: jemalloc global allocator with background_thread, graceful SIGTERM; db_connection: with the turso engine, the default query concurrency is 2 x CPUs (4..16) unless APPLICATION_MAX_CONCURRENT_QUERIES is set; common: INDEX_CACHE_VERIFY_PERCENT defaults to 1 instead of 100 (a 1% sample of index cache hits is still read again from persistence and panics on a mismatch; at 100 the cache saved no reads); cmd_util: Sentry layer filtered at INFO. Built on magodohayday from /srv/amage-c8/c8j-src, a copy of this tree, and accepted there on sqlite, postgres and turso. Local image, never pushed.",
-  "patchSha256": "4e2f4517e5c263af9e4c28e510954f5b8d52e3f254e966a38e04c4a7bbc944c8",
-  "patchSha256MnemonicPrefixes": "8dd98e132f0ecbb71c0c5a593a9dfc6fd159267cff1596d6099499c069859100",
-  "version": "amage-20261001-candidate.8-turso+base.849a6fc605b5.patch.4e2f4517e5c2",
+  "notes": "C8 = C7 (c7Reference) + crates/turso_persistence (Convex persistence on turso_core 0.8.1, same db.sqlite3 file, WAL, one writer with commit/retention lanes + reader pool that keeps one reader for point lookups, index scan without correlated subquery, gated WAL maintenance, SQLite recovers a crash WAL before Turso opens), CONVEX_SQLITE_ENGINE=rusqlite|turso (default rusqlite); crates_vendor/turso_core = turso_core 0.8.1 with page-cache invalidation by page instead of a full clear on every change (snapshots/turso_core-0.8.1-granular-cache.patch in the evidence folder), wired with [patch.crates-io]; isolate: a read syscall batch runs holding the concurrency permit and heap stats refresh every 16 turns; local_backend: jemalloc global allocator with background_thread, graceful SIGTERM; db_connection: with the turso engine, the default query concurrency is 2 x CPUs (4..16) unless APPLICATION_MAX_CONCURRENT_QUERIES is set; common: INDEX_CACHE_VERIFY_PERCENT defaults to 1 instead of 100 (a 1% sample of index cache hits is still read again from persistence and panics on a mismatch; at 100 the cache saved no reads); cmd_util: Sentry layer filtered at INFO. isolate: ready contexts (isolate/src/warm_snapshot.rs, AMAGE_WARM_SNAPSHOT, default on): after a query or mutation module is imported in a fresh context, its graph is built into a V8 snapshot by the backend binary started again as a child (AMAGE_WARM_SNAPSHOT_BUILD_DIR), so a V8 abort on an unserializable import only drops that module; the import runs under a probe that refuses every op and syscall except textEncoder/normalizeLabel, pending promise reactions and unhandled rejections; the child starts from the parent's runtime snapshot with --no-extensible-ro-snapshot so every blob keeps its read-only part (V8 shares one read-only heap per process); later requests on the same source package deserialize the ready context and register its modules instead of importing them; isolates move to a new blob generation at their next request. Built on magodohayday from /srv/amage-c8/c8k-src, a copy of this tree, and accepted there on sqlite, postgres and turso. Local image, never pushed.",
+  "patchSha256": "10cd6758b64802b2a6796cba6573bf91d62062da02f782ea6428790497e1791f",
+  "patchSha256MnemonicPrefixes": "8d48ecb686a8e8bccdfe68963af0278f3a0820275a62476f3e5be629a0d86b2d",
+  "version": "amage-20261001-candidate.8-turso+base.849a6fc605b5.patch.10cd6758b648",
   "buildSourceTree": null,
-  "headCommit": "97bc5ed42b384692c18cfb029acb5f4d5e70d8ba",
+  "headCommit": "c6ef5904edc575d88452efc05737af229d728a95",
   "buildTreeDirty": [
-    " M crates/common/src/knobs.rs"
+    " M Cargo.lock",
+    " M crates/common/src/knobs.rs",
+    " M crates/isolate/src/client.rs",
+    " M crates/isolate/src/context_cache.rs",
+    " M crates/isolate/src/environment/udf/mod.rs",
+    " M crates/isolate/src/environment/udf/phase.rs",
+    " M crates/isolate/src/execution_scope.rs",
+    " M crates/isolate/src/isolate.rs",
+    " M crates/isolate/src/lib.rs",
+    " M crates/isolate/src/metrics.rs",
+    " M crates/isolate/src/module_cache.rs",
+    " M crates/isolate/src/module_map.rs",
+    " M crates/isolate/src/udf_runtime.rs",
+    " A crates/isolate/src/warm_snapshot.rs",
+    " M crates/local_backend/Cargo.toml",
+    " M crates/local_backend/src/main.rs"
   ],
-  "builtAt": "2026-10-01T21:08:41-03:00",
+  "builtAt": "2026-10-01T22:43:16-03:00",
   "buildArgs": {
     "CARGO_BUILD_JOBS": "6",
     "VERGEN_GIT_SHA": "849a6fc605b5a910c9834b61a77c5475cc24d189",
     "VERGEN_GIT_COMMIT_TIMESTAMP": "2026-09-05T23:58:23Z",
-    "AMAGE_PATCH_SHA256": "4e2f4517e5c263af9e4c28e510954f5b8d52e3f254e966a38e04c4a7bbc944c8",
+    "AMAGE_PATCH_SHA256": "10cd6758b64802b2a6796cba6573bf91d62062da02f782ea6428790497e1791f",
     "AMAGE_PATCH_COMMIT": "d08adecb7",
     "AMAGE_PROTOCOL": "amage.verified-deploy/2",
-    "CONVEX_RELEASE_VERSION": "amage-20261001-candidate.8-turso+base.849a6fc605b5.patch.4e2f4517e5c2"
+    "CONVEX_RELEASE_VERSION": "amage-20261001-candidate.8-turso+base.849a6fc605b5.patch.10cd6758b648"
   },
-  "image": "amage-convex-backend:amage-20261001-candidate.8-turso-4e2f4517e5c2",
-  "imageId": "sha256:59c63e30670688a44936ad2c10c1fe117212bde7ad8c0fad4790deb9bc310ea8",
-  "amd64ManifestDigest": "sha256:59c63e30670688a44936ad2c10c1fe117212bde7ad8c0fad4790deb9bc310ea8",
-  "configDigest": "sha256:6d4dd5efa672b324f6fb2233af5fac9415634021be1f2f5619d0046db88117e1",
+  "image": "amage-convex-backend:amage-20261001-candidate.8-turso-10cd6758b648",
+  "imageId": "sha256:ee9d429f1c5b001f694f54bfe459699bf7d9061132e1554305d901a5c8678939",
+  "amd64ManifestDigest": "sha256:ee9d429f1c5b001f694f54bfe459699bf7d9061132e1554305d901a5c8678939",
+  "configDigest": "sha256:63691ec2307c27ea75e6cc1daca5aec88e86a122ca71736d5781ae18cf076923",
   "labels": {
     "org.amage.base-revision": "849a6fc605b5a910c9834b61a77c5475cc24d189",
     "org.amage.patch-commit": "d08adecb7",
-    "org.amage.patch-sha256": "4e2f4517e5c263af9e4c28e510954f5b8d52e3f254e966a38e04c4a7bbc944c8",
+    "org.amage.patch-sha256": "10cd6758b64802b2a6796cba6573bf91d62062da02f782ea6428790497e1791f",
     "org.amage.verified-deploy.protocol": "amage.verified-deploy/2",
     "org.opencontainers.image.revision": "849a6fc605b5a910c9834b61a77c5475cc24d189",
-    "org.opencontainers.image.version": "amage-20261001-candidate.8-turso+base.849a6fc605b5.patch.4e2f4517e5c2",
+    "org.opencontainers.image.version": "amage-20261001-candidate.8-turso+base.849a6fc605b5.patch.10cd6758b648",
     "org.opencontainers.repository": "https://github.com/get-convex/convex-backend"
   },
-  "binarySha256": "4a30134f35bdc133d6c410d5d8f4fa2a65e50ac2c9f0de371e1c4c5b92b0c89e",
-  "binaryVersion": "local_backend amage-20261001-candidate.8-turso+base.849a6fc605b5.patch.4e2f4517e5c2",
-  "builtOn": "magodohayday:/srv/amage-c8/c8j-src (build.sh, buildx builder amage-c8)",
+  "binarySha256": "a68b819f05f884603482f3c8916feb1bb291890cc9a641f63251d59b7f0350a4",
+  "binaryVersion": "local_backend amage-20261001-candidate.8-turso+base.849a6fc605b5.patch.10cd6758b648",
+  "builtOn": "magodohayday:/srv/amage-c8/c8k-src (build.sh, buildx builder amage-c8)",
   "acceptance": {
     "result": "passed",
     "engines": [
@@ -64,7 +79,7 @@
       "postgres",
       "turso"
     ],
-    "at": "2026-10-01T21:11-03:00",
-    "log": "bench/vps/acceptance-C8j.log (evidence folder)"
+    "at": "2026-10-01T22:46-03:00",
+    "log": "bench/vps/acceptance-C8k.log (evidence folder)"
   }
 }

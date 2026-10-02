@@ -65,6 +65,12 @@ impl ModuleMap {
         }
     }
 
+    /// Every registered module with its source, in registration order: for a
+    /// fresh import, the entry module first.
+    pub fn modules(&self) -> impl Iterator<Item = (&ModuleSpecifier, &Arc<V8ModuleSource>)> {
+        self.modules.iter().map(|m| (&m.name, &m.module_source))
+    }
+
     pub fn name_by_handle(&self, handle: &v8::Global<v8::Module>) -> Option<&ModuleSpecifier> {
         let id = self.by_handle.get(handle)?;
         let info = &self.modules[*id];

@@ -90,6 +90,12 @@ async fn shutdown_requested() -> std::io::Result<&'static str> {
 }
 
 fn main() -> Result<(), MainError> {
+    // The ready-context builder runs as a child of this binary; it must not
+    // parse the backend's arguments or start anything else.
+    if let Some(code) = isolate::warm_snapshot::run_builder_if_requested() {
+        std::process::exit(code);
+    }
+    isolate::warm_snapshot::enable_builder();
     let config = LocalConfig::parse();
     if let Some(subcommand) = &config.subcommand {
         // Subcommands produce machine-parseable output on stdout, so configure

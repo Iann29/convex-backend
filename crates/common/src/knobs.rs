@@ -978,6 +978,25 @@ pub static ISOLATE_IDLE_TIMEOUT: LazyLock<Duration> =
 pub static ISOLATE_MAX_LIFETIME: LazyLock<Duration> =
     LazyLock::new(|| Duration::from_secs(env_config("ISOLATE_MAX_LIFETIME_SECONDS", 60 * 60)));
 
+/// Ready contexts: a query or mutation starts from a V8 snapshot taken right
+/// after its module graph was imported, instead of importing it again (see
+/// `isolate::warm_snapshot`).
+pub static AMAGE_WARM_SNAPSHOT: LazyLock<bool> =
+    LazyLock::new(|| env_config("AMAGE_WARM_SNAPSHOT", true));
+
+/// How many module graphs the ready-context blob may hold.
+pub static AMAGE_WARM_SNAPSHOT_MAX_MODULES: LazyLock<usize> =
+    LazyLock::new(|| env_config("AMAGE_WARM_SNAPSHOT_MAX_MODULES", 128));
+
+/// How long the builder waits after a new graph shows up, so the first
+/// requests after a start or a push go into one build.
+pub static AMAGE_WARM_SNAPSHOT_DELAY: LazyLock<Duration> =
+    LazyLock::new(|| Duration::from_millis(env_config("AMAGE_WARM_SNAPSHOT_DELAY_MS", 2000)));
+
+/// How long the builder process may run before it is killed.
+pub static AMAGE_WARM_SNAPSHOT_TIMEOUT: LazyLock<Duration> =
+    LazyLock::new(|| Duration::from_secs(env_config("AMAGE_WARM_SNAPSHOT_TIMEOUT_SECONDS", 120)));
+
 /// System timeout for V8 actions.
 /// This doesn't count most syscalls, but it does count module loading.
 pub static V8_ACTION_SYSTEM_TIMEOUT: LazyLock<Duration> =
@@ -2020,9 +2039,9 @@ pub static UDF_404_ON_BAD_PATH: LazyLock<bool> =
 ///
 /// At 100 every cache hit is read again from persistence, so the cache saves
 /// no reads at all. 1 keeps a sample that still panics on a mismatch: on a
-/// chat-like load with 500 live subscriptions, the write p99 dropped from 275
-/// to 91 ms and the time for a message to reach its watchers from 580 to
-/// 163 ms (p99).
+/// chat-like load (300 reads + 60 writes/s, 500 live subscriptions), going
+/// from 100 to 1 took the p99 for a message to reach its watchers from 364 to
+/// 177 ms and the send p99 from 132 to 90 ms.
 pub static INDEX_CACHE_VERIFY_PERCENT: LazyLock<u8> =
     LazyLock::new(|| env_config("INDEX_CACHE_VERIFY_PERCENT", 1));
 

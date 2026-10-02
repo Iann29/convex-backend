@@ -37,6 +37,7 @@ pub mod strings;
 mod termination;
 pub mod timeout;
 mod udf_runtime;
+pub mod warm_snapshot;
 
 pub use self::{
     client::{

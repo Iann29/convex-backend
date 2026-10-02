@@ -29,6 +29,11 @@ use crate::{
     },
     metrics::create_context_timer,
     module_map::ModuleMap,
+    warm_snapshot::{
+        WarmEntry,
+        WarmKey,
+        WarmSnapshot,
+    },
 };
 
 enum SavedContext {
@@ -44,6 +49,8 @@ enum SavedContext {
 pub struct ContextCache {
     saved_context: Option<SavedContext>,
     cached_contexts: Arc<CachedContexts>,
+    /// The ready contexts in this isolate's blob.
+    warm: Option<Arc<WarmSnapshot>>,
 }
 
 /// A mirror of the cache keys present in a `ContextCache`.
@@ -70,6 +77,11 @@ pub struct ContextReadSet {
 
 impl ContextCache {
     pub fn new() -> Self {
+        Self::for_isolate(None)
+    }
+
+    /// For an isolate created from `warm`'s blob.
+    pub fn for_isolate(warm: Option<Arc<WarmSnapshot>>) -> Self {
         Self {
             saved_context: None,
             cached_contexts: Arc::new(CachedContexts {
@@ -77,7 +89,18 @@ impl ContextCache {
                     saved_database_udf_context: None,
                 }),
             }),
+            warm,
         }
+    }
+
+    /// Whether this isolate's blob holds any ready context.
+    pub(crate) fn has_warm(&self) -> bool {
+        self.warm.is_some()
+    }
+
+    /// The ready context for `key`, if this isolate's blob holds one.
+    pub(crate) fn warm_entry(&self, key: &WarmKey) -> Option<WarmEntry> {
+        self.warm.as_ref()?.entry(key).cloned()
     }
 
     pub(crate) fn prepare(&mut self, isolate: &mut v8::Isolate) {

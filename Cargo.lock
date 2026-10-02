@@ -6228,6 +6228,7 @@ dependencies = [
  "http_client",
  "hyper-util",
  "indexing",
+ "isolate",
  "jsonschema",
  "keybroker",
  "maplit",

@@ -207,6 +207,11 @@ use crate::{
         PauseGuard,
         Timeout,
     },
+    warm_snapshot::{
+        self,
+        WarmEntry,
+        WarmKey,
+    },
 };
 
 pub struct DatabaseUdfSyscallProvider<RT: Runtime> {
@@ -427,6 +432,20 @@ impl<RT: Runtime> DatabaseUdfInnerProvider<RT> for DatabaseUdfSyscallProvider<RT
 
     async fn initialize(&mut self, timeout: &mut Timeout<RT>) -> anyhow::Result<()> {
         self.phase.initialize(timeout).await
+    }
+
+    fn warm_key(&self) -> Option<WarmKey> {
+        let module = self.path.udf_path.module();
+        if module.is_system() {
+            return None;
+        }
+        Some(WarmKey {
+            module: CanonicalizedComponentModulePath {
+                component: self.path.component,
+                module_path: module.clone(),
+            },
+            source_package: self.phase.source_package_id()?,
+        })
     }
 
     fn begin_execution(
@@ -673,6 +692,10 @@ pub trait DatabaseUdfInnerProvider<RT: Runtime>:
     ) -> anyhow::Result<Self::Outcome>;
 
     fn snoop_reads(&mut self) -> anyhow::Result<()>;
+    /// Where a ready context for this request's module is filed, once
+    /// `initialize` ran. `None` for system modules and for requests that do
+    /// not load a source package.
+    fn warm_key(&self) -> Option<WarmKey>;
     /// If `should_capture` is false, always returns None
     async fn finish_snoop(
         &mut self,
@@ -836,6 +859,23 @@ where
     ) -> anyhow::Result<(Self, anyhow::Result<Result<PendingValue, JsError>>)> {
         scope!(let handle_scope, isolate);
         let mut context_scope;
+        // Whether this isolate has a ready context for the module depends on
+        // the request's source package, which `initialize` loads.
+        let mut initialized = false;
+        let mut warm: Option<WarmEntry> = None;
+        if !args.reuse_context && context_cache.has_warm() {
+            request_state
+                .environment
+                .syscall_provider
+                .initialize(timeout)
+                .await?;
+            initialized = true;
+            warm = request_state
+                .environment
+                .syscall_provider
+                .warm_key()
+                .and_then(|key| context_cache.warm_entry(&key));
+        }
         let (mut isolate_context, mut context_read_set) = if args.reuse_context
             && let Some((context, module_map, read_set)) = request_state
                 .environment
@@ -853,6 +893,25 @@ where
                     module_map,
                 ),
                 Some(read_set),
+            )
+        } else if let Some(entry) = &warm {
+            let timer = metrics::warm_snapshot_context_timer();
+            let v8_context = v8::Context::from_snapshot(
+                handle_scope,
+                entry.index,
+                v8::ContextOptions::default(),
+            )
+            .context("Failed to deserialize a ready context")?;
+            drop(timer);
+            context_scope = v8::ContextScope::new(handle_scope, v8_context);
+            (
+                RequestScope::new(
+                    &mut context_scope,
+                    execution_handle.clone(),
+                    request_state,
+                    false,
+                )?,
+                None,
             )
         } else {
             let v8_context = context_cache.get_or_create_fresh_context(handle_scope);
@@ -883,6 +942,8 @@ where
                     timeout,
                     args.reuse_context,
                     context_read_set.is_some(),
+                    initialized,
+                    warm.as_ref(),
                 )
                 .await;
                 if snoop {
@@ -961,12 +1022,14 @@ where
         timeout: &mut Timeout<RT>,
         reusable_context: bool,
         is_reused: bool,
+        initialized: bool,
+        warm: Option<&WarmEntry>,
     ) -> anyhow::Result<Result<v8::Local<'c, v8::Module>, JsError>> {
         let mut scope = RequestScope::<RT, Self>::enter(v8_scope);
 
         // Initialize the environment, preloading the UDF config, before executing any
-        // JS.
-        {
+        // JS. `run_nested` already did when it looked for a ready context.
+        if !initialized {
             let state = scope.state_mut()?;
             state
                 .environment
@@ -1001,6 +1064,13 @@ where
             return Ok(Err(JsError::from_message(message)));
         };
 
+        // A ready context holds the graph imported already: hand its modules
+        // to the module map, and the import below finds them evaluated.
+        if let Some(entry) = warm {
+            scope
+                .register_ready_modules(&entry.modules, timeout)
+                .await?;
+        }
         let module = match scope
             .eval_user_module(udf_type, false, &module_specifier, timeout)
             .await?
@@ -1008,6 +1078,14 @@ where
             Ok(id) => id,
             Err(e) => return Ok(Err(e)),
         };
+        if !reusable_context {
+            metrics::log_warm_snapshot_import(warm.is_some());
+            if warm.is_none()
+                && let Some(key) = scope.state()?.environment.syscall_provider.warm_key()
+            {
+                warm_snapshot::observe(key, scope.module_map());
+            }
+        }
 
         Ok(Ok(module))
     }

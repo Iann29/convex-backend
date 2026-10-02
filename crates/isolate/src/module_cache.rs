@@ -81,6 +81,15 @@ impl V8ExternalString {
         }
     }
 
+    /// The source as text, or `None` if it holds UTF-16 that is not valid
+    /// (such as an unpaired surrogate), which [`Self::to_utf8`] would replace.
+    pub fn to_exact_text(&self) -> Option<String> {
+        match self {
+            Self::OneByte(s) => Some(s.iter().map(|&byte| byte as char).collect()),
+            Self::TwoByte(s) => String::from_utf16(s).ok(),
+        }
+    }
+
     /// The inverse of [`Self::new`], for consumers that need the source as
     /// plain text rather than as a V8 string — the wasm runtime bundles module
     /// text with esbuild and never builds a V8 string out of it.

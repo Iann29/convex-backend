@@ -358,6 +358,31 @@ impl<'a, 's: 'a, 'i: 'a, RT: Runtime, E: V8IsolateEnvironment<RT>>
         Ok(module)
     }
 
+    /// For a context deserialized from a ready-context snapshot: the graph is
+    /// already imported in it, attached as context data in `modules` order.
+    /// Registers each module's handle with its source, as `register_module`
+    /// would, so `eval_user_module` finds the entry imported.
+    pub async fn register_ready_modules(
+        &mut self,
+        modules: &[ModuleSpecifier],
+        timeout: &mut Timeout<RT>,
+    ) -> anyhow::Result<()> {
+        for (i, name) in modules.iter().enumerate() {
+            let (module_source, _) = self.lookup_source(name, timeout).await?;
+            let module: v8::Local<v8::Module> = self
+                .get_context_data_from_snapshot_once(i)
+                .map_err(|e| anyhow!("Ready context lost module {name}: {e:?}"))?;
+            anyhow::ensure!(
+                module.get_status() == v8::ModuleStatus::Evaluated,
+                "Ready context has {name} in {:?}",
+                module.get_status()
+            );
+            let handle = v8::Global::new(self, module);
+            self.module_map_mut().register(name, handle, module_source);
+        }
+        Ok(())
+    }
+
     #[async_recursion(?Send)]
     async fn register_module(
         &mut self,

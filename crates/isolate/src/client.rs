@@ -54,6 +54,7 @@ use common::{
         RoutedHttpPath,
     },
     knobs::{
+        AMAGE_WARM_SNAPSHOT,
         ANALYZE_CONCURRENCY,
         HEAP_WORKER_REPORT_INTERVAL_SECONDS,
         ISOLATE_IDLE_TIMEOUT,
@@ -1545,7 +1546,7 @@ pub trait IsolateWorker<RT: Runtime>: Clone + Send + 'static {
                 *ISOLATE_MAX_USER_HEAP_SIZE,
             );
             isolate.set_heap_stats_handle(heap_stats.clone());
-            let mut context_cache = ContextCache::new();
+            let mut context_cache = ContextCache::for_isolate(isolate.warm().cloned());
             heap_stats.store(isolate.heap_stats());
             loop {
                 context_cache.prepare(isolate.isolate());
@@ -1684,6 +1685,14 @@ pub fn should_recreate_isolate<RT: Runtime>(
 
     if isolate.created().elapsed() > *ISOLATE_MAX_LIFETIME {
         metrics::log_recreate_isolate("max_lifetime");
+        return true;
+    }
+
+    // A newer ready-context blob exists: start from it.
+    if *AMAGE_WARM_SNAPSHOT
+        && isolate.warm().map_or(0, |warm| warm.generation()) != crate::warm_snapshot::generation()
+    {
+        metrics::log_recreate_isolate("warm_snapshot");
         return true;
     }
 

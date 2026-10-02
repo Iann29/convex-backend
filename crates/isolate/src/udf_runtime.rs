@@ -19,6 +19,10 @@ use crate::{
     helpers,
     isolate::SETUP_URL,
     strings,
+    warm_snapshot::{
+        self,
+        WarmSnapshot,
+    },
 };
 
 static BASE_SNAPSHOT: OnceLock<Vec<u8>> = OnceLock::new();
@@ -35,25 +39,41 @@ pub(crate) fn initialize() {
         .expect("can't initialize more than once");
 }
 
+/// The runtime snapshot `initialize` made.
+pub(crate) fn base_snapshot() -> &'static [u8] {
+    BASE_SNAPSHOT
+        .get()
+        .expect("udf_runtime::initialize not called")
+}
+
 /// Set a 64KB initial heap size
 const INITIAL_HEAP_SIZE: usize = 1 << 16;
 
 /// Creates a new V8 isolate from the saved snapshot. Contexts created in this
-/// isolate will have the UDF runtime already loaded.
-pub(crate) fn create_isolate_with_udf_runtime(
+/// isolate will have the UDF runtime already loaded. With `warm`, the blob
+/// also holds that generation's ready contexts.
+///
+/// # Safety
+///
+/// V8 reads the blob for as long as the isolate lives, so the caller must
+/// keep `warm` alive until the returned isolate is dropped.
+pub(crate) unsafe fn create_isolate_with_udf_runtime(
     create_params: v8::CreateParams,
     max_heap_size: usize,
+    warm: Option<&WarmSnapshot>,
 ) -> v8::OwnedIsolate {
-    let snapshot = BASE_SNAPSHOT
-        .get()
-        .expect("udf_runtime::initialize not called");
+    let snapshot: &'static [u8] = match warm {
+        // SAFETY: the caller keeps `warm` alive longer than the isolate.
+        Some(warm) => unsafe { std::mem::transmute::<&[u8], &'static [u8]>(warm.blob()) },
+        None => base_snapshot(),
+    };
     v8::Isolate::new(
         create_params
             .heap_limits(
                 INITIAL_HEAP_SIZE,
                 max_heap_size + *ISOLATE_MAX_HEAP_EXTRA_SIZE,
             )
-            .snapshot_blob(Cow::Borrowed(&snapshot[..]).into())
+            .snapshot_blob(Cow::Borrowed(snapshot).into())
             .external_references(external_references().into()),
     )
 }
@@ -69,12 +89,23 @@ fn illegal_constructor<'s>(
     }
 }
 
-fn external_references() -> Vec<v8::ExternalReference> {
+/// The same list must be given to every isolate that creates or reads a
+/// snapshot: references are stored by index.
+pub(crate) fn external_references() -> Vec<v8::ExternalReference> {
     // TODO: make sure that everything is included in the list of external
     // references
-    vec![v8::ExternalReference {
-        function: illegal_constructor.map_fn_to(),
-    }]
+    vec![
+        v8::ExternalReference {
+            function: illegal_constructor.map_fn_to(),
+        },
+        // The probe a ready context is imported under (`warm_snapshot`).
+        v8::ExternalReference {
+            function: warm_snapshot::probe_op.map_fn_to(),
+        },
+        v8::ExternalReference {
+            function: warm_snapshot::probe_other.map_fn_to(),
+        },
+    ]
 }
 
 fn create_base_snapshot() -> v8::StartupData {

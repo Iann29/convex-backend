@@ -61,6 +61,7 @@ use udf::environment::{
 use value::{
     identifier::Identifier,
     ConvexValue,
+    ResolvedDocumentId,
 };
 
 /// Populated for non-root components only, when any of the component's env
@@ -348,6 +349,19 @@ impl<RT: Runtime> UdfPhase<RT> {
             ));
         }
         Ok(component_args)
+    }
+
+    /// The source package this request's modules come from, once
+    /// `initialize` ran. `None` on the ad-hoc test query path, which loads
+    /// pending modules instead of a package.
+    pub fn source_package_id(&self) -> Option<ResolvedDocumentId> {
+        match &self.preloaded {
+            UdfPreloaded::Ready {
+                source_package: Some(source_package),
+                ..
+            } => Some(source_package.id()),
+            _ => None,
+        }
     }
 
     #[fastrace::trace]

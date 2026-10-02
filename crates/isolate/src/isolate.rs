@@ -11,6 +11,7 @@ use std::{
 use anyhow::Context as _;
 use common::{
     knobs::{
+        AMAGE_WARM_SNAPSHOT,
         ISOLATE_MAX_ARRAY_BUFFER_TOTAL_SIZE,
         ISOLATE_MAX_USER_HEAP_SIZE,
     },
@@ -55,6 +56,10 @@ use crate::{
         IsolateTerminationReason,
     },
     timeout::start_request_on_handle,
+    warm_snapshot::{
+        self,
+        WarmSnapshot,
+    },
     ConcurrencyPermit,
     Timeout,
 };
@@ -79,6 +84,10 @@ pub struct Isolate<RT: Runtime> {
     max_user_heap_size: usize,
 
     created: tokio::time::Instant,
+    /// The ready-context generation whose blob this isolate was created from.
+    /// V8 reads the blob for the isolate's whole life: `Drop` disposes the V8
+    /// isolate before this field is dropped.
+    warm: Option<Arc<WarmSnapshot>>,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -164,10 +173,20 @@ impl<RT: Runtime> Isolate<RT> {
             crate::array_buffer_allocator::limited_array_buffer_allocator(
                 *ISOLATE_MAX_ARRAY_BUFFER_TOTAL_SIZE,
             );
-        let mut v8_isolate = crate::udf_runtime::create_isolate_with_udf_runtime(
-            v8::CreateParams::default().array_buffer_allocator(array_buffer_allocator),
-            max_user_heap_size,
-        );
+        let warm = if *AMAGE_WARM_SNAPSHOT {
+            warm_snapshot::current()
+        } else {
+            None
+        };
+        // SAFETY: `warm` moves into `Self`, and `Drop` disposes the V8 isolate
+        // before the fields are dropped.
+        let mut v8_isolate = unsafe {
+            crate::udf_runtime::create_isolate_with_udf_runtime(
+                v8::CreateParams::default().array_buffer_allocator(array_buffer_allocator),
+                max_user_heap_size,
+                warm.as_deref(),
+            )
+        };
 
         // Tells V8 to capture current stack trace when uncaught exception occurs and
         // report it to the message listeners. The option is off by default.
@@ -225,6 +244,7 @@ impl<RT: Runtime> Isolate<RT> {
             max_user_timeout,
             array_buffer_memory_limit,
             max_user_heap_size,
+            warm,
         }
     }
 
@@ -331,6 +351,11 @@ impl<RT: Runtime> Isolate<RT> {
 
     pub fn isolate(&mut self) -> &mut v8::Isolate {
         &mut self.v8_isolate
+    }
+
+    /// The ready contexts this isolate's blob holds.
+    pub fn warm(&self) -> Option<&Arc<WarmSnapshot>> {
+        self.warm.as_ref()
     }
 
     pub fn created(&self) -> &tokio::time::Instant {

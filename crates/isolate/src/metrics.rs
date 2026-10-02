@@ -582,6 +582,59 @@ pub fn create_context_timer() -> Timer<prometheus::VMHistogram> {
 }
 
 register_convex_histogram!(
+    WARM_SNAPSHOT_CONTEXT_SECONDS,
+    "Time to deserialize a ready context, module graph included"
+);
+pub fn warm_snapshot_context_timer() -> Timer<prometheus::VMHistogram> {
+    Timer::new(&WARM_SNAPSHOT_CONTEXT_SECONDS)
+}
+
+register_convex_counter!(
+    WARM_SNAPSHOT_IMPORTS_TOTAL,
+    "Query and mutation module imports by where the context came from",
+    &["context"]
+);
+pub fn log_warm_snapshot_import(ready: bool) {
+    log_counter_with_labels(
+        &WARM_SNAPSHOT_IMPORTS_TOTAL,
+        1,
+        vec![StaticMetricLabel::new(
+            "context",
+            if ready { "ready" } else { "fresh" },
+        )],
+    );
+}
+
+register_convex_histogram!(
+    WARM_SNAPSHOT_BUILD_SECONDS,
+    "Time to build the ready-context blob",
+    &STATUS_LABEL
+);
+pub fn log_warm_snapshot_build(elapsed: Duration, success: bool) {
+    log_distribution_with_labels(
+        &WARM_SNAPSHOT_BUILD_SECONDS,
+        elapsed.as_secs_f64(),
+        vec![StaticMetricLabel::new(
+            "status",
+            if success { "success" } else { "error" },
+        )],
+    );
+}
+
+register_convex_gauge!(
+    WARM_SNAPSHOT_CONTEXTS_TOTAL,
+    "Ready contexts in the current blob"
+);
+register_convex_gauge!(
+    WARM_SNAPSHOT_BLOB_BYTES,
+    "Size of the current ready-context blob"
+);
+pub fn log_warm_snapshot_contexts(contexts: usize, blob_bytes: usize) {
+    log_gauge(&WARM_SNAPSHOT_CONTEXTS_TOTAL, contexts as f64);
+    log_gauge(&WARM_SNAPSHOT_BLOB_BYTES, blob_bytes as f64);
+}
+
+register_convex_histogram!(
     CREATE_CODE_CACHE_SECONDS,
     "Time to create a code cache for a module",
     &STATUS_LABEL
