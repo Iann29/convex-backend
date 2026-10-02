@@ -988,6 +988,24 @@ pub static AMAGE_WARM_SNAPSHOT: LazyLock<bool> =
 pub static AMAGE_WARM_SNAPSHOT_MAX_MODULES: LazyLock<usize> =
     LazyLock::new(|| env_config("AMAGE_WARM_SNAPSHOT_MAX_MODULES", 128));
 
+/// How much one ready context may take in the blob, serialized. A module
+/// that builds large data at import puts it in every context whose graph
+/// imports it.
+pub static AMAGE_WARM_SNAPSHOT_MAX_CONTEXT_BYTES: LazyLock<usize> =
+    LazyLock::new(|| env_config::<usize>("AMAGE_WARM_SNAPSHOT_MAX_CONTEXT_MIB", 32) << 20);
+
+/// How much all ready contexts may take together. The backend keeps the
+/// blob in memory, two generations of it while isolates move to a new one.
+pub static AMAGE_WARM_SNAPSHOT_MAX_BYTES: LazyLock<usize> =
+    LazyLock::new(|| env_config::<usize>("AMAGE_WARM_SNAPSHOT_MAX_MIB", 128) << 20);
+
+/// How much of the blob every isolate may load when it is created: the
+/// strings, scripts and compiled code of all ready contexts. It counts
+/// against each isolate's heap, ISOLATE_MAX_USER_HEAP_SIZE plus
+/// ISOLATE_MAX_HEAP_EXTRA_SIZE.
+pub static AMAGE_WARM_SNAPSHOT_MAX_SHARED_BYTES: LazyLock<usize> =
+    LazyLock::new(|| env_config::<usize>("AMAGE_WARM_SNAPSHOT_MAX_SHARED_MIB", 16) << 20);
+
 /// How long the builder waits after a new graph shows up, so the first
 /// requests after a start or a push go into one build.
 pub static AMAGE_WARM_SNAPSHOT_DELAY: LazyLock<Duration> =

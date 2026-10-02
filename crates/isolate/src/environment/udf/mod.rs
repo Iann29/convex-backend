@@ -940,6 +940,7 @@ where
             .context("Failed to deserialize a ready context")?;
             drop(timer);
             context_scope = v8::ContextScope::new(handle_scope, v8_context);
+            crate::warm_snapshot::bind_stand_ins(&mut context_scope, &entry.stand_ins);
             (
                 RequestScope::new(
                     &mut context_scope,

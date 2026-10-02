@@ -478,6 +478,9 @@ impl<RT: Runtime> ActionEnvironment<RT> {
             None => context_cache.get_or_create_fresh_context(handle_scope),
         };
         let context_scope = &mut v8::ContextScope::new(handle_scope, v8_context);
+        if let Some(entry) = &warm {
+            crate::warm_snapshot::bind_stand_ins(context_scope, &entry.stand_ins);
+        }
 
         let mut isolate_context = RequestScope::new(context_scope, handle.clone(), state, true)?;
 
@@ -832,6 +835,9 @@ impl<RT: Runtime> ActionEnvironment<RT> {
             None => context_cache.get_or_create_fresh_context(handle_scope),
         };
         let context_scope = &mut v8::ContextScope::new(handle_scope, v8_context);
+        if let Some(entry) = &warm {
+            crate::warm_snapshot::bind_stand_ins(context_scope, &entry.stand_ins);
+        }
 
         let mut isolate_context = RequestScope::new(context_scope, handle.clone(), state, true)?;
         let mut result = Self::run_action_inner(

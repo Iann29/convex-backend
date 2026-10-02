@@ -105,6 +105,19 @@ pub(crate) fn external_references() -> Vec<v8::ExternalReference> {
         v8::ExternalReference {
             function: warm_snapshot::probe_other.map_fn_to(),
         },
+        // Its guards on what V8 adds to request contexts, and the stand-ins
+        // for methods among them.
+        v8::ExternalReference {
+            function: warm_snapshot::call_stand_in.map_fn_to(),
+        },
+        v8::ExternalReference {
+            pointer: MapFnTo::<v8::AccessorNameGetterCallback>::map_fn_to(warm_snapshot::guard_get)
+                as *const () as *mut std::ffi::c_void,
+        },
+        v8::ExternalReference {
+            pointer: MapFnTo::<v8::AccessorNameSetterCallback>::map_fn_to(warm_snapshot::guard_set)
+                as *const () as *mut std::ffi::c_void,
+        },
     ]
 }
 
