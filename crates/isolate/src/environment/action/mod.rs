@@ -18,9 +18,13 @@ use std::{
     time::Duration,
 };
 
-use anyhow::anyhow;
+use anyhow::{
+    anyhow,
+    Context as _,
+};
 use common::{
     components::{
+        CanonicalizedComponentModulePath,
         ComponentId,
         ComponentPath,
     },
@@ -55,9 +59,12 @@ use common::{
     value::ConvexValue,
 };
 use database::Transaction;
-use deno_core::v8::{
-    self,
-    scope,
+use deno_core::{
+    v8::{
+        self,
+        scope,
+    },
+    ModuleSpecifier,
 };
 use futures::{
     future::BoxFuture,
@@ -86,6 +93,7 @@ use parking_lot::Mutex;
 use rand_chacha::ChaCha12Rng;
 use serde_json::Value as JsonValue;
 use sync_types::{
+    CanonicalizedModulePath,
     CanonicalizedUdfPath,
     ModulePath,
 };
@@ -192,6 +200,12 @@ use crate::{
     timeout::{
         FunctionExecutionTime,
         Timeout,
+    },
+    warm_snapshot::{
+        self,
+        ImportInputs,
+        WarmEntry,
+        WarmKey,
     },
     ConcurrencyPermit,
 };
@@ -329,6 +343,90 @@ impl<RT: Runtime> ActionEnvironment<RT> {
         }
     }
 
+    /// Where a ready context for `module_path` is filed, once the phase is
+    /// initialized.
+    fn warm_key(&self, module_path: &CanonicalizedModulePath) -> Option<WarmKey> {
+        if module_path.is_system() {
+            return None;
+        }
+        Some(WarmKey {
+            module: CanonicalizedComponentModulePath {
+                component: self.phase.component(),
+                module_path: module_path.clone(),
+            },
+            source_package: self.phase.source_package_id()?,
+        })
+    }
+
+    /// Before a context exists: the ready context this isolate holds for
+    /// `module_path`, if what its import read still holds. Initializes the
+    /// phase to know the source package.
+    async fn ready_context(
+        &mut self,
+        context_cache: &ContextCache,
+        module_path: &CanonicalizedModulePath,
+        timeout: &mut Timeout<RT>,
+    ) -> anyhow::Result<Option<WarmEntry>> {
+        if !context_cache.has_warm() {
+            return Ok(None);
+        }
+        self.phase.initialize(timeout).await?;
+        let Some(entry) = self
+            .warm_key(module_path)
+            .and_then(|key| context_cache.warm_entry(&key))
+        else {
+            return Ok(None);
+        };
+        if let Some(seed_and_time) = entry.inputs.seed_and_time
+            && self.phase.import_seed_and_time() != Some(seed_and_time)
+        {
+            return Ok(None);
+        }
+        for (name, value) in &entry.inputs.env {
+            if self.phase.environment_variable_for_check(name)? != *value {
+                return Ok(None);
+            }
+        }
+        Ok(Some(entry))
+    }
+
+    /// Imports `module_specifier` for `module_path`, from the ready context
+    /// when there is one. After a fresh import, keeps the graph for the next
+    /// ready-context build.
+    async fn import_module<'s>(
+        scope: &mut ExecutionScope<'_, 's, '_, RT, Self>,
+        timeout: &mut Timeout<RT>,
+        udf_type: UdfType,
+        module_path: &CanonicalizedModulePath,
+        module_specifier: &ModuleSpecifier,
+        warm: Option<&WarmEntry>,
+    ) -> anyhow::Result<Result<v8::Local<'s, v8::Module>, JsError>> {
+        if let Some(entry) = warm {
+            scope
+                .register_ready_modules(&entry.modules, timeout)
+                .await?;
+        }
+        let module = match scope
+            .eval_user_module(udf_type, false, module_specifier, timeout)
+            .await?
+        {
+            Ok(module) => module,
+            Err(e) => return Ok(Err(e)),
+        };
+        metrics::log_warm_snapshot_import(warm.is_some());
+        if warm.is_none() {
+            let environment = &scope.state()?.environment;
+            if let Some(key) = environment.warm_key(module_path) {
+                let inputs = ImportInputs::new(
+                    environment.phase.import_env_reads(),
+                    environment.phase.import_seed_and_time(),
+                );
+                warm_snapshot::observe(key, scope.module_map(), inputs);
+            }
+        }
+        Ok(Ok(module))
+    }
+
     /// Called only after a lookup succeeds. An unmatched route's path is the
     /// raw request path, which no token or usage record should keep.
     fn set_http_action_route(&self, route: HttpActionRoute) {
@@ -358,13 +456,24 @@ impl<RT: Runtime> ActionEnvironment<RT> {
         anyhow::ensure!(component_function_path.component == self.phase.component());
         let udf_path = &component_function_path.udf_path;
 
-        let (handle, state, mut timeout) =
+        let (handle, mut state, mut timeout) =
             isolate.start_request(context_cache, permit, self).await?;
         if let Some(tx) = function_started {
             _ = tx.send(());
         }
+        let warm = state
+            .environment
+            .ready_context(context_cache, udf_path.module(), &mut timeout)
+            .await?;
         scope!(let handle_scope, isolate.isolate());
-        let v8_context = context_cache.get_or_create_fresh_context(handle_scope);
+        let v8_context = match &warm {
+            Some(entry) => {
+                let _timer = metrics::warm_snapshot_context_timer();
+                v8::Context::from_snapshot(handle_scope, entry.index, v8::ContextOptions::default())
+                    .context("Failed to deserialize a ready context")?
+            },
+            None => context_cache.get_or_create_fresh_context(handle_scope),
+        };
         let context_scope = &mut v8::ContextScope::new(handle_scope, v8_context);
 
         let mut isolate_context = RequestScope::new(context_scope, handle.clone(), state, true)?;
@@ -377,6 +486,7 @@ impl<RT: Runtime> ActionEnvironment<RT> {
             udf_path,
             routed_path,
             request,
+            warm.as_ref(),
         )
         .await;
         // Override the returned result if we hit a termination error.
@@ -437,14 +547,18 @@ impl<RT: Runtime> ActionEnvironment<RT> {
         http_module_path: &CanonicalizedUdfPath,
         routed_path: RoutedHttpPath,
         http_request: HttpActionRequest,
+        warm: Option<&WarmEntry>,
     ) -> anyhow::Result<(Option<HttpActionRoute>, HttpActionResult)> {
         let handle = isolate.handle();
         scope!(let v8_scope, isolate.scope());
         let mut scope = RequestScope::<RT, Self>::enter(v8_scope);
 
         {
+            // `ready_context` initialized the phase if this isolate has any.
             let state = scope.state_mut()?;
-            state.environment.phase.initialize(timeout).await?;
+            if !state.environment.phase.is_initialized() {
+                state.environment.phase.initialize(timeout).await?;
+            }
         }
 
         /*
@@ -464,7 +578,7 @@ impl<RT: Runtime> ActionEnvironment<RT> {
          * but this interface must be backward compatible.
          */
         let router: Result<_, JsError> =
-            Self::get_router(&mut scope, timeout, http_module_path.clone()).await?;
+            Self::get_router(&mut scope, timeout, http_module_path.clone(), warm).await?;
 
         if let Err(e) = router {
             return Ok((None, HttpActionResult::Error(e)));
@@ -692,13 +806,28 @@ impl<RT: Runtime> ActionEnvironment<RT> {
     ) -> anyhow::Result<ActionOutcome> {
         let start_unix_timestamp = self.rt.unix_timestamp();
 
-        let (handle, state, mut timeout) =
+        let (handle, mut state, mut timeout) =
             isolate.start_request(context_cache, permit, self).await?;
         if let Some(tx) = function_started {
             _ = tx.send(());
         }
+        let warm = state
+            .environment
+            .ready_context(
+                context_cache,
+                request_params.path_and_args.path().udf_path.module(),
+                &mut timeout,
+            )
+            .await?;
         scope!(let handle_scope, isolate.isolate());
-        let v8_context = context_cache.get_or_create_fresh_context(handle_scope);
+        let v8_context = match &warm {
+            Some(entry) => {
+                let _timer = metrics::warm_snapshot_context_timer();
+                v8::Context::from_snapshot(handle_scope, entry.index, v8::ContextOptions::default())
+                    .context("Failed to deserialize a ready context")?
+            },
+            None => context_cache.get_or_create_fresh_context(handle_scope),
+        };
         let context_scope = &mut v8::ContextScope::new(handle_scope, v8_context);
 
         let mut isolate_context = RequestScope::new(context_scope, handle.clone(), state, true)?;
@@ -707,6 +836,7 @@ impl<RT: Runtime> ActionEnvironment<RT> {
             &mut timeout,
             request_params.clone(),
             cancellation,
+            warm.as_ref(),
         )
         .await;
 
@@ -760,13 +890,17 @@ impl<RT: Runtime> ActionEnvironment<RT> {
         timeout: &mut Timeout<RT>,
         request_params: ActionRequestParams,
         cancellation: BoxFuture<'_, ()>,
+        warm: Option<&WarmEntry>,
     ) -> anyhow::Result<Result<ConvexValue, JsError>> {
         let handle = isolate.handle();
         scope!(let v8_scope, isolate.scope());
         let mut scope = RequestScope::<RT, Self>::enter(v8_scope);
         {
+            // `ready_context` initialized the phase if this isolate has any.
             let state = scope.state_mut()?;
-            state.environment.phase.initialize(timeout).await?;
+            if !state.environment.phase.is_initialized() {
+                state.environment.phase.initialize(timeout).await?;
+            }
         }
         let (path, arguments, _) = request_params.path_and_args.consume();
 
@@ -789,9 +923,15 @@ impl<RT: Runtime> ActionEnvironment<RT> {
             return Ok(Err(JsError::from_message(message)));
         };
 
-        let module = match scope
-            .eval_user_module(UdfType::Action, false, &module_specifier, timeout)
-            .await?
+        let module = match Self::import_module(
+            &mut scope,
+            timeout,
+            UdfType::Action,
+            module_path,
+            &module_specifier,
+            warm,
+        )
+        .await?
         {
             Ok(id) => id,
             Err(e) => return Ok(Err(e)),
@@ -921,6 +1061,7 @@ impl<RT: Runtime> ActionEnvironment<RT> {
         scope: &mut ExecutionScope<'_, 's, '_, RT, Self>,
         timeout: &mut Timeout<RT>,
         http_module_path: CanonicalizedUdfPath,
+        warm: Option<&WarmEntry>,
     ) -> anyhow::Result<Result<v8::Local<'s, v8::Object>, JsError>> {
         // Except in tests, `http.js` will always be the udf_path.
         // We'll never hit these as long as this HTTP path only runs for
@@ -936,9 +1077,15 @@ impl<RT: Runtime> ActionEnvironment<RT> {
             return Ok(Err(JsError::from_message(message)));
         };
 
-        let module = match scope
-            .eval_user_module(UdfType::HttpAction, false, &module_specifier, timeout)
-            .await?
+        let module = match Self::import_module(
+            scope,
+            timeout,
+            UdfType::HttpAction,
+            &module_path,
+            &module_specifier,
+            warm,
+        )
+        .await?
         {
             Ok(id) => id,
             Err(e) => return Ok(Err(e)),

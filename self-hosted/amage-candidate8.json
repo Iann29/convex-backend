@@ -22,44 +22,42 @@
   "patchCommit": "d08adecb7",
   "variant": "8-turso",
   "published": false,
-  "notes": "C8 = C7 (c7Reference) + crates/turso_persistence (Convex persistence on turso_core 0.8.1, same db.sqlite3 file, WAL, one writer with commit/retention lanes + reader pool that keeps one reader for point lookups, index scan without correlated subquery, gated WAL maintenance, SQLite recovers a crash WAL before Turso opens), CONVEX_SQLITE_ENGINE=rusqlite|turso (default rusqlite); crates_vendor/turso_core = turso_core 0.8.1 with page-cache invalidation by page instead of a full clear on every change (snapshots/turso_core-0.8.1-granular-cache.patch in the evidence folder), wired with [patch.crates-io]; isolate: a read syscall batch runs holding the concurrency permit and heap stats refresh every 16 turns; local_backend: jemalloc global allocator with background_thread, graceful SIGTERM; db_connection: with the turso engine, the default query concurrency is 2 x CPUs (4..16) unless APPLICATION_MAX_CONCURRENT_QUERIES is set; common: INDEX_CACHE_VERIFY_PERCENT defaults to 1 instead of 100 (a 1% sample of index cache hits is still read again from persistence and panics on a mismatch; at 100 the cache saved no reads); cmd_util: Sentry layer filtered at INFO. isolate: ready contexts (isolate/src/warm_snapshot.rs, AMAGE_WARM_SNAPSHOT, default on): after a query or mutation module is imported in a fresh context, its graph is built into a V8 snapshot by the backend binary started again as a child (AMAGE_WARM_SNAPSHOT_BUILD_DIR), so a V8 abort on an unserializable import only drops that module; the import runs under a probe that answers environmentVariables/get, random and now with what the observed import read (its variables, and the per-push import seed and time) plus textEncoder/normalizeLabel, and refuses every other op and syscall, pending promise reactions and unhandled rejections; a request uses the ready context only while those variables, seed and time still hold (the variables are read with the same read dependencies); inputs reach the child through a pipe and refusal reasons never carry exception text; the child starts from the parent's runtime snapshot with --no-extensible-ro-snapshot so every blob keeps its read-only part (V8 shares one read-only heap per process); later requests on the same source package deserialize the ready context and register its modules instead of importing them; isolates move to a new blob generation at their next request. application: peers waiting on a query's precise cache key get the result even when it is stored under the identity-free key (the query never read ctx.auth), instead of being sent back to retry. Built on magodohayday from /srv/amage-c8/c8m-src, a copy of this tree, and accepted there on sqlite, postgres and turso. Local image, never pushed.",
-  "patchSha256": "1c0a7cddfd37a1f3f3b844d81c5b2bab6072c94a0fa44c7cc75aa7b5c11307cc",
-  "patchSha256MnemonicPrefixes": "3c3813f7b56239f8430f614cea56418a6bb47b76bba810b7e4824c3df28653bd",
-  "version": "amage-20261001-candidate.8-turso+base.849a6fc605b5.patch.1c0a7cddfd37",
+  "notes": "C8 = C7 (c7Reference) + crates/turso_persistence (Convex persistence on turso_core 0.8.1, same db.sqlite3 file, WAL, one writer with commit/retention lanes + reader pool that keeps one reader for point lookups, index scan without correlated subquery, gated WAL maintenance, SQLite recovers a crash WAL before Turso opens), CONVEX_SQLITE_ENGINE=rusqlite|turso (default rusqlite); crates_vendor/turso_core = turso_core 0.8.1 with page-cache invalidation by page instead of a full clear on every change (snapshots/turso_core-0.8.1-granular-cache.patch in the evidence folder), wired with [patch.crates-io]; isolate: a read syscall batch runs holding the concurrency permit and heap stats refresh every 16 turns; local_backend: jemalloc global allocator with background_thread, graceful SIGTERM; db_connection: with the turso engine, the default query concurrency is 2 x CPUs (4..16) unless APPLICATION_MAX_CONCURRENT_QUERIES is set; common: INDEX_CACHE_VERIFY_PERCENT defaults to 1 instead of 100 (a 1% sample of index cache hits is still read again from persistence and panics on a mismatch; at 100 the cache saved no reads); cmd_util: Sentry layer filtered at INFO. isolate: ready contexts (isolate/src/warm_snapshot.rs, AMAGE_WARM_SNAPSHOT, default on): after a query or mutation module is imported in a fresh context, its graph is built into a V8 snapshot by the backend binary started again as a child (AMAGE_WARM_SNAPSHOT_BUILD_DIR), so a V8 abort on an unserializable import only drops that module; the import runs under a probe that answers environmentVariables/get, random and now with what the observed import read (its variables, and the per-push import seed and time) plus textEncoder/normalizeLabel, and refuses every other op and syscall, pending promise reactions and unhandled rejections; a request uses the ready context only while those variables, seed and time still hold (the variables are read with the same read dependencies); inputs reach the child through a pipe and refusal reasons never carry exception text; the child starts from the parent's runtime snapshot with --no-extensible-ro-snapshot so every blob keeps its read-only part (V8 shares one read-only heap per process); later requests on the same source package deserialize the ready context and register its modules instead of importing them; isolates move to a new blob generation at their next request. V8 actions and HTTP actions use the same ready contexts (module path, source package and import inputs checked before the context is created); the action phase keeps each component's module map per source package instead of reading every module's metadata and source on each action. application: peers waiting on a query's precise cache key get the result even when it is stored under the identity-free key (the query never read ctx.auth), instead of being sent back to retry. Built on magodohayday from /srv/amage-c8/c8o-src, a copy of this tree, and accepted there on sqlite, postgres and turso. Local image, never pushed.",
+  "patchSha256": "632a3ab1265fe6b8934095bd462f5893cae0767b6ef9cacabdab75648e9525ea",
+  "patchSha256MnemonicPrefixes": "45be8f2066d46e6f4c47d0143bbdf0f40db20205cb9af50d47393edbea277382",
+  "version": "amage-20261001-candidate.8-turso+base.849a6fc605b5.patch.632a3ab1265f",
   "buildSourceTree": null,
-  "headCommit": "df4deaa109e6d68cd4a51422ea1dce377c6e94dc",
+  "headCommit": "8082f239cf84846cb1dfa41ad8a7d3e53e0b7ce2",
   "buildTreeDirty": [
-    " M crates/application/src/cache/mod.rs",
-    " M crates/isolate/src/environment/udf/mod.rs",
-    " M crates/isolate/src/environment/udf/phase.rs",
-    " M crates/isolate/src/warm_snapshot.rs"
+    " M crates/isolate/src/environment/action/mod.rs",
+    " M crates/isolate/src/environment/action/phase.rs"
   ],
-  "builtAt": "2026-10-01T23:25:32-03:00",
+  "builtAt": "2026-10-01T23:58:31-03:00",
   "buildArgs": {
     "CARGO_BUILD_JOBS": "6",
     "VERGEN_GIT_SHA": "849a6fc605b5a910c9834b61a77c5475cc24d189",
     "VERGEN_GIT_COMMIT_TIMESTAMP": "2026-09-05T23:58:23Z",
-    "AMAGE_PATCH_SHA256": "1c0a7cddfd37a1f3f3b844d81c5b2bab6072c94a0fa44c7cc75aa7b5c11307cc",
+    "AMAGE_PATCH_SHA256": "632a3ab1265fe6b8934095bd462f5893cae0767b6ef9cacabdab75648e9525ea",
     "AMAGE_PATCH_COMMIT": "d08adecb7",
     "AMAGE_PROTOCOL": "amage.verified-deploy/2",
-    "CONVEX_RELEASE_VERSION": "amage-20261001-candidate.8-turso+base.849a6fc605b5.patch.1c0a7cddfd37"
+    "CONVEX_RELEASE_VERSION": "amage-20261001-candidate.8-turso+base.849a6fc605b5.patch.632a3ab1265f"
   },
-  "image": "amage-convex-backend:amage-20261001-candidate.8-turso-1c0a7cddfd37",
-  "imageId": "sha256:13fe9761ec1979ab8027376dcacaf5b13defbe63de088a0ed1a32983c9186520",
-  "amd64ManifestDigest": "sha256:13fe9761ec1979ab8027376dcacaf5b13defbe63de088a0ed1a32983c9186520",
-  "configDigest": "sha256:bcb02cd05e69ff2b8efa64bd520658bcc4dc08a253077c10f7995e1ca6b943eb",
+  "image": "amage-convex-backend:amage-20261001-candidate.8-turso-632a3ab1265f",
+  "imageId": "sha256:936cfbb0279a272e6ae41819634721ed490e65b987056d82019998449c464df6",
+  "amd64ManifestDigest": "sha256:936cfbb0279a272e6ae41819634721ed490e65b987056d82019998449c464df6",
+  "configDigest": "sha256:b6e4c3c86932a08af61e7b0b587179edb7fecd447417ce6e035d458c9f03aefe",
   "labels": {
     "org.amage.base-revision": "849a6fc605b5a910c9834b61a77c5475cc24d189",
     "org.amage.patch-commit": "d08adecb7",
-    "org.amage.patch-sha256": "1c0a7cddfd37a1f3f3b844d81c5b2bab6072c94a0fa44c7cc75aa7b5c11307cc",
+    "org.amage.patch-sha256": "632a3ab1265fe6b8934095bd462f5893cae0767b6ef9cacabdab75648e9525ea",
     "org.amage.verified-deploy.protocol": "amage.verified-deploy/2",
     "org.opencontainers.image.revision": "849a6fc605b5a910c9834b61a77c5475cc24d189",
-    "org.opencontainers.image.version": "amage-20261001-candidate.8-turso+base.849a6fc605b5.patch.1c0a7cddfd37",
+    "org.opencontainers.image.version": "amage-20261001-candidate.8-turso+base.849a6fc605b5.patch.632a3ab1265f",
     "org.opencontainers.repository": "https://github.com/get-convex/convex-backend"
   },
-  "binarySha256": "17c49ef6d7efcdd810f725a98ec14ce3239820207a49af3e3843354fcc6e2d4b",
-  "binaryVersion": "local_backend amage-20261001-candidate.8-turso+base.849a6fc605b5.patch.1c0a7cddfd37",
-  "builtOn": "magodohayday:/srv/amage-c8/c8m-src (build.sh, buildx builder amage-c8)",
+  "binarySha256": "8715d661cde8e8b995b2fd3ea916f270e9ba288875513e3db5c7a26a97da7b50",
+  "binaryVersion": "local_backend amage-20261001-candidate.8-turso+base.849a6fc605b5.patch.632a3ab1265f",
+  "builtOn": "magodohayday:/srv/amage-c8/c8o-src (build.sh, buildx builder amage-c8)",
   "acceptance": {
     "result": "passed",
     "engines": [
@@ -67,7 +65,7 @@
       "postgres",
       "turso"
     ],
-    "at": "2026-10-01T23:29-03:00",
-    "log": "bench/vps/acceptance-C8m.log (evidence folder)"
+    "at": "2026-10-02T00:01-03:00",
+    "log": "bench/vps/acceptance-C8o.log (evidence folder)"
   }
 }

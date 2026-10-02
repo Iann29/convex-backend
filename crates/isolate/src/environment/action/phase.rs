@@ -1,8 +1,14 @@
 use std::{
-    collections::BTreeMap,
+    collections::{
+        BTreeMap,
+        HashMap,
+    },
     mem,
     str::FromStr,
-    sync::Arc,
+    sync::{
+        Arc,
+        LazyLock,
+    },
     time::Duration,
 };
 
@@ -64,6 +70,7 @@ use udf::environment::{
 use value::{
     identifier::Identifier,
     ConvexValue,
+    ResolvedDocumentId,
 };
 
 use crate::{
@@ -86,6 +93,17 @@ use crate::{
     },
 };
 
+/// The modules of one component on one source package, with their sources.
+type PackageModules =
+    BTreeMap<CanonicalizedModulePath, (Arc<ParsedDocument<ModuleMetadata>>, Arc<V8ModuleSource>)>;
+
+/// The module map of each component's latest source package seen. Loading
+/// one reads every module's metadata and source (363 modules for one app),
+/// which every action and HTTP action used to repeat.
+static PACKAGE_MODULES: LazyLock<
+    Mutex<HashMap<ComponentId, (ResolvedDocumentId, Arc<PackageModules>)>>,
+> = LazyLock::new(Default::default);
+
 /// This struct is similar to UdfPhase. Action execution also has two
 /// phases: 1. We start by loading all imported modules, evaluating them, and
 /// inserting them into the module map. 2. We find the endpoint and run it.
@@ -98,6 +116,10 @@ pub struct ActionPhase<RT: Runtime> {
     phase: Phase,
     pub rt: RT,
     preloaded: ActionPreloaded<RT>,
+    /// Environment variables read while importing, with what they held: a
+    /// ready context (`warm_snapshot`) built from this import is only valid
+    /// while they still hold the same.
+    import_env_reads: Vec<(EnvVarName, Option<EnvVarValue>)>,
 }
 
 /// Populated for non-root components, pairing the component's env bindings
@@ -119,16 +141,14 @@ enum ActionPreloaded<RT: Runtime> {
     Preloading,
     Ready {
         module_loader: Arc<dyn ModuleCache<RT>>,
-        modules: BTreeMap<
-            CanonicalizedModulePath,
-            (Arc<ParsedDocument<ModuleMetadata>>, Arc<V8ModuleSource>),
-        >,
+        modules: Arc<PackageModules>,
         env_vars: BTreeMap<EnvVarName, EnvVarValue>,
         component_arguments: Option<BTreeMap<Identifier, ConvexValue>>,
         component_env: Option<ComponentEnvCtx>,
         rng: Option<ChaCha12Rng>,
         import_time_unix_timestamp: Option<UnixTimestamp>,
         performance_api: Option<PerformanceApi>,
+        source_package: Option<ResolvedDocumentId>,
     },
 }
 
@@ -153,6 +173,7 @@ impl<RT: Runtime> ActionPhase<RT> {
                 resources,
                 convex_origin_override,
             },
+            import_env_reads: vec![],
         }
     }
 
@@ -185,28 +206,50 @@ impl<RT: Runtime> ActionPhase<RT> {
                 let import_time_unix_timestamp =
                     udf_config.as_ref().map(|c| c.import_phase_unix_timestamp);
 
-                let module_metadata = ModuleModel::new(&mut tx)
-                    .get_all_metadata(component_id)
-                    .await?;
                 let source_package = SourcePackageModel::new(&mut tx, component_id.into())
                     .get_latest()
                     .await?;
-                let mut modules = BTreeMap::new();
-                for metadata in module_metadata {
-                    if metadata.path.is_system() {
-                        continue;
-                    }
-                    let path = metadata.path.clone();
-                    let module = module_loader
-                        .get_module_with_metadata(
-                            &metadata,
-                            source_package
-                                .as_ref()
-                                .context("source package not found")?,
-                        )
-                        .await?;
-                    modules.insert(path, (metadata, module));
-                }
+                // A source package fixes every module of the component, so its
+                // module map is loaded once instead of on every action.
+                let package_id = source_package.as_ref().map(|p| p.id());
+                let cached = package_id.and_then(|id| {
+                    PACKAGE_MODULES
+                        .lock()
+                        .get(&component_id)
+                        .filter(|(cached_id, _)| *cached_id == id)
+                        .map(|(_, modules)| modules.clone())
+                });
+                let modules = match cached {
+                    Some(modules) => modules,
+                    None => {
+                        let module_metadata = ModuleModel::new(&mut tx)
+                            .get_all_metadata(component_id)
+                            .await?;
+                        let mut modules = BTreeMap::new();
+                        for metadata in module_metadata {
+                            if metadata.path.is_system() {
+                                continue;
+                            }
+                            let path = metadata.path.clone();
+                            let module = module_loader
+                                .get_module_with_metadata(
+                                    &metadata,
+                                    source_package
+                                        .as_ref()
+                                        .context("source package not found")?,
+                                )
+                                .await?;
+                            modules.insert(path, (metadata, module));
+                        }
+                        let modules = Arc::new(modules);
+                        if let Some(id) = package_id {
+                            PACKAGE_MODULES
+                                .lock()
+                                .insert(component_id, (id, modules.clone()));
+                        }
+                        modules
+                    },
+                };
 
                 {
                     let loaded_resources = ComponentsModel::new(&mut tx)
@@ -287,6 +330,7 @@ impl<RT: Runtime> ActionPhase<RT> {
                     rng,
                     import_time_unix_timestamp,
                     performance_api: import_time_unix_timestamp.map(PerformanceApi::new),
+                    source_package: source_package.as_ref().map(|p| p.id()),
                 })
             })
             .await?;
@@ -296,6 +340,46 @@ impl<RT: Runtime> ActionPhase<RT> {
 
     pub fn component(&self) -> ComponentId {
         self.component
+    }
+
+    /// Whether `initialize` ran.
+    pub fn is_initialized(&self) -> bool {
+        matches!(self.preloaded, ActionPreloaded::Ready { .. })
+    }
+
+    /// The source package this request's modules come from.
+    pub fn source_package_id(&self) -> Option<ResolvedDocumentId> {
+        match &self.preloaded {
+            ActionPreloaded::Ready { source_package, .. } => *source_package,
+            _ => None,
+        }
+    }
+
+    /// Environment variables the import read so far, in order.
+    pub fn import_env_reads(&self) -> &[(EnvVarName, Option<EnvVarValue>)] {
+        &self.import_env_reads
+    }
+
+    /// The seed of `Math.random` and the time `Date.now` returns while
+    /// importing: fixed per push by the UDF config.
+    pub fn import_seed_and_time(&self) -> Option<([u8; 32], UnixTimestamp)> {
+        match &self.preloaded {
+            ActionPreloaded::Ready {
+                rng: Some(rng),
+                import_time_unix_timestamp: Some(unix_timestamp),
+                ..
+            } if self.phase == Phase::Importing => Some((rng.get_seed(), *unix_timestamp)),
+            _ => None,
+        }
+    }
+
+    /// Reads a variable as an import would, without counting it as one of
+    /// this import's inputs.
+    pub fn environment_variable_for_check(
+        &self,
+        name: &EnvVarName,
+    ) -> anyhow::Result<Option<EnvVarValue>> {
+        self.lookup_environment_variable(name)
     }
 
     pub fn get_module(
@@ -353,6 +437,17 @@ impl<RT: Runtime> ActionPhase<RT> {
         &mut self,
         name: EnvVarName,
     ) -> anyhow::Result<Option<EnvVarValue>> {
+        let value = self.lookup_environment_variable(&name)?;
+        if self.phase == Phase::Importing {
+            self.import_env_reads.push((name, value.clone()));
+        }
+        Ok(value)
+    }
+
+    fn lookup_environment_variable(
+        &self,
+        name: &EnvVarName,
+    ) -> anyhow::Result<Option<EnvVarValue>> {
         let ActionPreloaded::Ready {
             ref env_vars,
             ref component_env,
@@ -374,7 +469,7 @@ impl<RT: Runtime> ActionPhase<RT> {
                 },
             }
         }
-        Ok(env_vars.get(&name).cloned())
+        Ok(env_vars.get(name).cloned())
     }
 
     pub fn component_arguments(&self) -> anyhow::Result<&BTreeMap<Identifier, ConvexValue>> {
